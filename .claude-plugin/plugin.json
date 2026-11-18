@@ -1,0 +1,14 @@
+{
+  "name": "agy",
+  "version": "0.1.0",
+  "description": "Antigravity CLI (agy) as a peer subagent / named teammate for Claude Code: quota-aware model chains, resumable named sessions, background jobs.",
+  "author": {
+    "name": "muruev"
+  },
+  "keywords": [
+    "mod",
+    "antigravity",
+    "gemini",
+    "agent-teams"
+  ]
+}
