@@ -11,13 +11,15 @@ const SELF = fileURLToPath(import.meta.url);
 const STATE = process.env.AGY_STATE_DIR || path.join(os.homedir(), '.claude', 'agy');
 const JOBS = path.join(STATE, 'jobs');
 const AGY = process.env.AGY_BIN || 'agy';
-const THRESHOLD = Number(process.env.AGY_QUOTA_THRESHOLD ?? 0.05);
+const CONFIG = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE, 'config.json'), 'utf8')); } catch { return {}; } })();
+const THRESHOLD = Number(process.env.AGY_QUOTA_THRESHOLD ?? CONFIG.threshold ?? 0.05);
 const USAGE_TTL_MS = Number(process.env.AGY_USAGE_TTL_MS ?? 60_000);
 const MAX_ARG_PROMPT = 20_000;
 
 export const CHAINS = {
   code: ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-4-argon-medium'],
   review: ['gemini-4-argon-medium'],
+  ...(CONFIG.chains || {}),
 };
 const MODES = { code: null, review: 'plan' };
 const PREAMBLE = {

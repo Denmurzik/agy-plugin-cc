@@ -1,0 +1,13 @@
+{
+  "name": "agy-plugin-cc",
+  "owner": {
+    "name": "Denmurzik"
+  },
+  "plugins": [
+    {
+      "name": "agy",
+      "source": "./",
+      "description": "Antigravity CLI (agy) as a quota-aware subagent / named teammate for Claude Code."
+    }
+  ]
+}

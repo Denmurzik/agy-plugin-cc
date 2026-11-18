@@ -7,9 +7,11 @@ description: Delegate coding or review/analysis work to Antigravity CLI (agy, Ge
 
 agy is a full coding agent on a separate subscription quota (Google AI Pro). Treat it as an **equal** of a Claude subagent, not as a reviewer of Claude's work. Prefer it for delegable work while it has quota: that saves the user's Claude limits.
 
-Companion: `C="$HOME/.claude/mods/antigravity/scripts/agy-companion.mjs"` — always `node "$C" …`.
+Companion: `C="$HOME/.claude/agy/agy-companion.mjs"` — always `node "$C" …`.
 
 ## What goes to agy
+
+Default chains below; the user may override them in `~/.claude/agy/config.json` (`node "$C" usage` shows what each role gets now).
 
 | Work | agy role | Model chain (auto) |
 |---|---|---|
