@@ -228,7 +228,7 @@ async function cmdRun(o, { ask = false } = {}) {
   const q = getQuota();
   const p = pickModel(role, q, { forced });
   const id = newJobId();
-  const base = { id, name: name || null, role, cwd, forcedModel: forced, timeoutMin: Number(o['timeout-min'] || process.env.AGY_TIMEOUT_MIN || CONFIG.timeoutMin || 60), conversationId: sess?.conversationId || null,
+  const base = { id, name: name || null, role, cwd, forcedModel: forced, timeoutMin: Number(o['timeout-min'] || process.env.AGY_TIMEOUT_MIN || CONFIG.timeoutMin || 120), conversationId: sess?.conversationId || null,
     createdAt: new Date().toISOString(), tried: [], attempts: [] };
   fs.writeFileSync(path.join(JOBS, id + '.prompt.md'), prompt);
   if (!p.model) {
@@ -415,7 +415,7 @@ function cmdSessions(o) {
 }
 
 const HELP = 'agy-companion <command>\n' +
-  '  run   --role code|review [--name N] [--fresh] [--cwd DIR] [--model M] [--timeout-min 60] [--background] [--wait-sec 540] [--prompt-file F | prompt...]\n' +
+  '  run   --role code|review [--name N] [--fresh] [--cwd DIR] [--model M] [--timeout-min 120] [--background] [--wait-sec 540] [--prompt-file F | prompt...]\n' +
   '  ask   <name> [--prompt-file F | prompt...]     continue a named session (same conversation)\n' +
   '  wait  <job> [--wait-sec 540]                   block until the job ends or the wait elapses\n' +
   '  status [job] [--all] [--json] | result <job> | cancel [job]\n' +
