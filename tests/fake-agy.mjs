@@ -36,6 +36,10 @@ else if (beh === 'quota') {
   const error = beh === 'malformed' ? 'Your previous response contained an improperly formatted function call: Malformed function call: Function call is empty' : 'There was a network issue connecting to the server, please try again.';
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: beh === 'eof-final' ? 'STATUS: DONE\nall good' : 'working on it', error }));
   process.exit(3);
+} else if (beh === 'print-timeout') {
+  console.log('AGY_ERROR: {"short_error":"print timeout after 30m0s with the turn still in progress; the response is partial","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout"}');
+  console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'The stream was interrupted. Please continue the task you were working on.' }));
+  process.exit(3);
 } else if (beh === 'write-fail') {
   fs.writeFileSync('agy-was-here.txt', 'x');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'boom' }));

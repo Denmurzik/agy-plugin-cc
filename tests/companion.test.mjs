@@ -169,3 +169,13 @@ test('failed job reports workspace changes made by agy', () => {
   const r = run(e, 'run', '--role', 'code', 'x');
   assert.match(r.stdout, /WORKSPACE: 0 new commit\(s\), \d+ uncommitted file\(s\) — agy DID work/);
 });
+
+test('per-turn print timeout continues the same conversation; default timeout is 60 min', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['print-timeout', 'ok'] } });
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  const c = calls(e);
+  assert.equal(c.length, 2);
+  assert.ok(convOf(c[1]));
+  assert.equal(c[0].args[c[0].args.indexOf('--print-timeout') + 1], '60m');
+});

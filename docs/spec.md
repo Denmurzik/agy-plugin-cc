@@ -19,7 +19,7 @@
   Квота кончилась посреди сессии → та же сессия (`--conversation`) продолжается на следующей модели цепочки.
   Все модели роли исчерпаны → `QUOTA_EXHAUSTED` + время ближайшего сброса; работа уходит Claude-агентам.
 - Ядро `scripts/agy-companion.mjs` (Node, без зависимостей): квоты, выбор модели, реестр именованных сессий
-  (`name → conversation_id`), фоновые задачи (таймаут 30 мин), status/result/cancel.
+  (`name → conversation_id`), фоновые задачи (лимит хода 60 мин; ход, упёршийся в лимит, продолжается в том же разговоре), status/result/cancel.
   Состояние: `~/.claude/agy/` (quota.json, sessions.json, jobs/).
 - Команды: `/agy:run`, `/agy:ask`, `/agy:status`, `/agy:result`, `/agy:cancel`, `/agy:usage`.
 - Агент `agy:agy-proxy` (haiku, только Bash) — тонкий прокси: делает agy именованным тимейтом команды.
