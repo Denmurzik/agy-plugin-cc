@@ -58,12 +58,12 @@ Defaults (Google AI Pro, agy 1.5.x model ids — see `agy models`):
 
 | Role | Chain |
 |---|---|
-| `code` | gemini-4-hydrogen-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
+| `code` | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
 | `review` | gemini-4-argon-medium |
 
 Override in `~/.claude/agy/config.json`:
 ```json
-{ "threshold": 0.05, "chains": { "code": ["gemini-4-hydrogen-high", "gemini-3.8-flash-high"], "review": ["gemini-4-argon-high"] } }
+{ "threshold": 0.05, "chains": { "code": ["gemini-4-neon-high", "gemini-3.8-flash-high"], "review": ["gemini-4-argon-high"] } }
 ```
 Quota groups are inferred from the model id: `gemini-4-argon*` → Argon, other `gemini*` → Gemini, everything else → Claude/GPT.
 

@@ -9,12 +9,12 @@
 - Две роли, от роли зависит модель и режим agy:
   | Роль | Режим agy | Цепочка моделей |
   |---|---|---|
-  | `code` (запись) | обычный | gemini-4-hydrogen-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
+  | `code` (запись) | обычный | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
   | `review` (анализ/ревью, чтение) | `--mode plan` | gemini-4-argon-medium |
   Разведка в agy не идёт никогда (её делает Claude haiku).
 - Каждый вызов agy идёт с `--dangerously-skip-permissions`. Глобальные настройки agy не трогаются.
 - Квота: `agy -p /usage --output-format json` (0 токенов) перед вызовом, кэш 60 с.
-  Группы: `gemini` (Hydrogen, Flash; 5ч + неделя), `3p` (Claude, GPT-OSS; 5ч + неделя), `argon` (неделя).
+  Группы: `gemini` (Neon, Flash; 5ч + неделя), `3p` (Claude, GPT-OSS; 5ч + неделя), `argon` (неделя).
   Модель пропускается, если любой лимит её группы < 5%. Ошибка квоты от agy помечает группу исчерпанной до её reset_time.
   Квота кончилась посреди сессии → та же сессия (`--conversation`) продолжается на следующей модели цепочки.
   Все модели роли исчерпаны → `QUOTA_EXHAUSTED` + время ближайшего сброса; работа уходит Claude-агентам.

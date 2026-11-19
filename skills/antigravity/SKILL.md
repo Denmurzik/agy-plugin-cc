@@ -1,6 +1,6 @@
 ---
 name: antigravity
-description: Delegate coding or review/analysis work to Antigravity CLI (agy, Gemini 4 Hydrogen/Argon + Claude via Google AI Pro quota) as a peer worker — one-shot or as a named, resumable teammate — with quota-aware model fallback. Use proactively whenever a self-contained code task or review/analysis could run on agy instead of a Claude subagent and agy still has quota; also when the user mentions agy/Antigravity/Gemini as a worker or asks for a second opinion from agy. Not for recon (search, "where is X", log reading) — that stays on Claude haiku.
+description: Delegate coding or review/analysis work to Antigravity CLI (agy, Gemini 4 Neon/Argon + Claude via Google AI Pro quota) as a peer worker — one-shot or as a named, resumable teammate — with quota-aware model fallback. Use proactively whenever a self-contained code task or review/analysis could run on agy instead of a Claude subagent and agy still has quota; also when the user mentions agy/Antigravity/Gemini as a worker or asks for a second opinion from agy. Not for recon (search, "where is X", log reading) — that stays on Claude haiku.
 ---
 
 # Antigravity (agy) as a peer worker
@@ -15,7 +15,7 @@ Default chains below; the user may override them in `~/.claude/agy/config.json` 
 
 | Work | agy role | Model chain (auto) |
 |---|---|---|
-| Implementation against a clear spec, bugfix, tests, mechanical multi-file change | `code` | gemini-4-hydrogen-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
+| Implementation against a clear spec, bugfix, tests, mechanical multi-file change | `code` | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
 | Review, analysis, architecture/debug reasoning, explaining code (read-only) | `review` (`--mode plan`) | gemini-4-argon-medium only |
 
 Never to agy:

@@ -52,13 +52,13 @@ test('isQuotaError', () => {
 });
 
 test('code run falls back to next model on quota error and blocks the group', () => {
-  const e = env({ models: { 'gemini-4-hydrogen-medium': 'quota' } });
+  const e = env({ models: { 'gemini-4-neon-medium': 'quota' } });
   const r = run(e, 'run', '--role', 'code', 'do', 'it');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /status=DONE/);
   assert.match(r.stdout, /OK from claude-sonnet-5-5-medium mode=default/);
   const c = calls(e);
-  assert.deepEqual(c.map((x) => x.args[x.args.indexOf('--model') + 1]), ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium']);
+  assert.deepEqual(c.map((x) => x.args[x.args.indexOf('--model') + 1]), ['gemini-4-neon-medium', 'claude-sonnet-5-5-medium']);
   assert.ok(c.every((x) => x.args.includes('--dangerously-skip-permissions')));
   assert.ok(!c[1].args.includes('--conversation'), 'failed first turn conversation must not be resumed');
   const q = JSON.parse(fs.readFileSync(path.join(e.dir, 'state', 'quota.json'), 'utf8'));
@@ -88,7 +88,7 @@ test('named session: ask continues the same conversation, even across a model sw
   const e = env({});
   const r1 = run(e, 'run', '--role', 'code', '--name', 'agy-impl-1', 'first');
   const cid = r1.stdout.match(/conversation=(\S+)/)[1];
-  fs.writeFileSync(path.join(e.dir, 'scenario.json'), JSON.stringify({ models: { 'gemini-4-hydrogen-medium': 'quota' } }));
+  fs.writeFileSync(path.join(e.dir, 'scenario.json'), JSON.stringify({ models: { 'gemini-4-neon-medium': 'quota' } }));
   const r2 = run(e, 'ask', 'agy-impl-1', 'second');
   assert.match(r2.stdout, new RegExp('conv=' + cid));
   assert.match(r2.stdout, /claude-sonnet-5-5-medium/);
@@ -109,7 +109,7 @@ test('long prompt goes through a file', () => {
 });
 
 test('background job can be waited on and cancelled', () => {
-  const e = env({ models: { 'gemini-4-hydrogen-medium': 'sleep' } });
+  const e = env({ models: { 'gemini-4-neon-medium': 'sleep' } });
   const r = run(e, 'run', '--role', 'code', '--background', 'x');
   const id = r.stdout.match(/job=(\S+)/)[1];
   const w = run(e, 'wait', id, '--wait-sec', '4');

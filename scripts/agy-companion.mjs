@@ -17,7 +17,7 @@ const USAGE_TTL_MS = Number(process.env.AGY_USAGE_TTL_MS ?? 60_000);
 const MAX_ARG_PROMPT = 20_000;
 
 export const CHAINS = {
-  code: ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-medium', 'gemini-4-argon-medium'],
+  code: ['gemini-4-neon-medium', 'claude-sonnet-5-5-medium', 'gemini-4-argon-medium'],
   review: ['gemini-4-argon-medium'],
   ...(CONFIG.chains || {}),
 };
