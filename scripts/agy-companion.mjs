@@ -189,9 +189,16 @@ function render(j, { json } = {}) {
   if (json) return JSON.stringify(j, null, 2);
   const head = '[agy] job=' + j.id + (j.name ? ' name=' + j.name : '') + ' role=' + j.role + ' model=' + (j.model || '-') + ' status=' + j.status.toUpperCase()
     + (j.conversationId ? ' conversation=' + j.conversationId : '');
-  if (j.status === 'done') return head + '\n' + (j.response || '').trim();
+  if (j.status === 'done') return head + (j.warning ? '\nWARNING: ' + j.warning : '') + '\n' + (j.response || '').trim();
   if (j.status === 'quota_exhausted') return head + '\nQUOTA_EXHAUSTED: all models for role "' + j.role + '" are out of quota until ' + (j.resetAt || '?') + ' (' + fmtTime(j.resetAt) + '). Use a Claude agent instead.';
-  if (j.status === 'failed' || j.status === 'cancelled') return head + '\n' + (j.error || '');
+  if (j.status === 'failed') {
+    const c = j.changes;
+    return head + '\nERROR (' + (j.errorKind || 'error') + (j.retryable ? ', retryable' : '') + (j.retries ? ', after ' + j.retries + ' auto-retries' : '') + '): ' + (j.error || '').trim()
+      + (c ? '\nWORKSPACE: ' + (c.changed ? c.commits.length + ' new commit(s)' + (c.commits.length ? ': ' + c.commits.slice(0, 5).join('; ') : '') + ', ' + c.dirtyFiles + ' uncommitted file(s) — agy DID work; inspect before re-running' : 'no changes') : '')
+      + (j.response ? '\nLAST AGY TEXT:\n' + j.response.trim() : '')
+      + (j.conversationId && j.name ? '\nTo continue the same conversation: ask ' + j.name + ' "continue"' : '');
+  }
+  if (j.status === 'cancelled') return head + '\n' + (j.error || '');
   return head + '\nstill running (' + Math.round((Date.now() - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's). Next: node "' + SELF + '" wait ' + j.id;
 }
 async function waitJob(id, sec) {
@@ -240,29 +247,71 @@ async function cmdRun(o, { ask = false } = {}) {
   else if (j.status === 'failed') process.exitCode = 1;
 }
 
+export function classifyError(r, buf) {
+  const text = (r?.error || '') + '\n' + String(buf || '').slice(-4000);
+  if (isQuotaError(text) && !/network issue|EOF|Malformed function call/i.test(r?.error || '')) return { kind: 'quota', retryable: false };
+  let agyErr = null;
+  const m = String(buf || '').match(/AGY_ERROR: (\{.*\})/g);
+  if (m) { try { agyErr = JSON.parse(m.at(-1).slice('AGY_ERROR: '.length)); } catch {} }
+  if (/Malformed function call|improperly formatted function call/i.test(text)) return { kind: 'malformed_call', retryable: true };
+  if (/network issue|\bEOF\b|connection reset|UNAVAILABLE|\b50[234]\b|deadline exceeded|stream (?:closed|error)/i.test(text)) return { kind: 'network', retryable: true };
+  if (/hard timeout/i.test(text)) return { kind: 'timeout', retryable: false };
+  if (agyErr?.retryable) return { kind: 'transient', retryable: true };
+  return { kind: 'error', retryable: false };
+}
+// agy sometimes errors AFTER writing its final answer (EOF / malformed call on the closing turn).
+export function looksFinal(response) {
+  return /^\s*STATUS:\s*(DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)\b/im.test(String(response || ''));
+}
+function gitSnap(cwd) {
+  const g = (...a) => spawnSync('git', ['-C', cwd, ...a], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+  const h = g('rev-parse', 'HEAD');
+  if (h.status !== 0) return null;
+  return { head: h.stdout.trim(), dirty: g('status', '--porcelain').stdout.split('\n').filter(Boolean).length };
+}
+function workspaceChanges(cwd, before) {
+  if (!before) return null;
+  const after = gitSnap(cwd);
+  if (!after) return null;
+  const commits = before.head === after.head ? [] : spawnSync('git', ['-C', cwd, 'log', '--oneline', '--no-decorate', before.head + '..' + after.head], { encoding: 'utf8', windowsHide: true }).stdout.split('\n').filter(Boolean);
+  return { commits, dirtyFiles: after.dirty, changed: commits.length > 0 || after.dirty !== before.dirty };
+}
+const RETRY_DELAYS_S = (process.env.AGY_RETRY_DELAYS || '15,45,90').split(',').map(Number);
+const CONTINUE_MSG = 'Your previous turn was cut off by a connection / tool-call error on the agy side (not by you). Continue the task from exactly where you stopped — check the workspace state first, do not redo steps that are already done. If the task is already complete, just give your final answer in the required format.';
+
 async function worker(id) {
   let j = updateJob(id, { status: 'running', startedAt: new Date().toISOString(), workerPid: process.pid });
   const promptText = fs.readFileSync(path.join(JOBS, id + '.prompt.md'), 'utf8');
   const logF = path.join(JOBS, id + '.log');
+  const before = gitSnap(j.cwd);
   let cid = j.conversationId;
   const tried = [];
+  let model = null;
+  let switchModel = true;
+  let retries = 0;
+  let pendingText = null; // set when the next turn is a "continue" after a transient error
+  let lastResponse = '';
+  const saveCid = (c) => { if (!c || c === cid) return; cid = c; updateJob(id, { conversationId: cid }); if (j.name) updateSession(j.name, { conversationId: cid }); };
   for (;;) {
-    const q = getQuota();
-    const p = pickModel(j.role, q, { exclude: tried, forced: j.forcedModel });
-    if (!p.model) { updateJob(id, { status: 'quota_exhausted', resetAt: p.resetAt, endedAt: new Date().toISOString() }); return; }
-    const model = p.model;
-    tried.push(model);
-    let text = cid ? promptText : PREAMBLE[j.role] + '\n\n---\n\n' + promptText;
+    if (switchModel) {
+      switchModel = false;
+      const p = pickModel(j.role, getQuota(), { exclude: tried, forced: j.forcedModel });
+      if (!p.model) { updateJob(id, { status: 'quota_exhausted', resetAt: p.resetAt, endedAt: new Date().toISOString() }); return; }
+      model = p.model;
+      tried.push(model);
+    }
+    let text = pendingText || (cid ? promptText : PREAMBLE[j.role] + '\n\n---\n\n' + promptText);
     if (text.length > MAX_ARG_PROMPT) {
       const pf = path.join(JOBS, id + '.full-prompt.md');
       fs.writeFileSync(pf, text);
       text = 'Your full task is in the file ' + pf + ' — read it completely first, then do exactly what it says.';
     }
-    const args = ['--model', model, '--output-format', 'json', '--dangerously-skip-permissions', '--print-timeout', j.timeoutMin + 'm'];
+    const args = ['--model', model, '--output-format', 'json', '--dangerously-skip-permissions', '--print-timeout', j.timeoutMin + 'm', '--log-file', path.join(JOBS, id + '.agy.log')];
     if (MODES[j.role]) args.push('--mode', MODES[j.role]);
     if (cid) args.push('--conversation', cid);
     args.push('-p', text);
     j = updateJob(id, { model, tried });
+    fs.appendFileSync(logF, '\n[companion ' + new Date().toISOString() + '] model=' + model + (cid ? ' conversation=' + cid : '') + (pendingText ? ' (continue after error, retry ' + retries + ')' : '') + '\n');
     const [cmd, a] = agyCmd(args);
     const res = await new Promise((resolve) => {
       let buf = '';
@@ -276,24 +325,35 @@ async function worker(id) {
     });
     if (loadJob(id).status === 'cancelled') return;
     const r = parseResult(res.buf);
-    const attempt = { model, exit: res.code, status: r?.status || null, usage: r?.usage || null };
+    const err = r?.status === 'SUCCESS' ? null : classifyError(r, res.buf);
+    const attempt = { model, exit: res.code, status: r?.status || null, error: err?.kind || null, continued: !!pendingText, usage: r?.usage || null };
     j = updateJob(id, { attempts: [...(j.attempts || []), attempt] });
-    if (r && r.status === 'SUCCESS') {
-      cid = r.conversation_id || cid;
-      updateJob(id, { status: 'done', response: r.response, conversationId: cid, usage: r.usage, endedAt: new Date().toISOString() });
+    if (r?.response?.trim()) lastResponse = r.response;
+    const done = (extra = {}) => {
+      updateJob(id, { status: 'done', response: lastResponse || r?.response || '', usage: r?.usage, endedAt: new Date().toISOString(), ...extra });
       if (j.name) updateSession(j.name, { conversationId: cid, lastModel: model });
-      return;
-    }
-    const errText = (r?.error || '') + '\n' + res.buf.slice(-2000);
-    if (isQuotaError(errText)) {
+    };
+    if (!err) { saveCid(r.conversation_id); return done(); }
+    if (err.kind === 'quota') {
+      // Same text again on the next model of the chain (the turn did nothing). A conversation
+      // created by a failed first turn is dropped; an existing one is continued.
       const g = groupOfModel(model);
-      const fresh = getQuota({ refresh: true });
-      const st = groupStatus(fresh, g);
+      const st = groupStatus(getQuota({ refresh: true }), g);
       blockGroup(g, st.until || new Date(Date.now() + 60 * 60_000).toISOString());
-      // Keep an existing conversation; a conversation created by a failed first turn is dropped.
+      switchModel = true;
       continue;
     }
-    updateJob(id, { status: 'failed', error: (r?.error || res.buf.trim().slice(-1500) || 'agy exited with code ' + res.code), endedAt: new Date().toISOString() });
+    saveCid(r?.conversation_id); // the turn may have done real work — never lose its conversation
+    if (looksFinal(r?.response)) return done({ warning: 'agy reported an error after its final answer (' + err.kind + '): ' + (r?.error || '').slice(0, 300) });
+    if (err.retryable && cid && retries < RETRY_DELAYS_S.length) {
+      await sleep(RETRY_DELAYS_S[retries++] * 1000);
+      if (loadJob(id).status === 'cancelled') return;
+      pendingText = CONTINUE_MSG;
+      continue;
+    }
+    updateJob(id, { status: 'failed', errorKind: err.kind, retryable: err.retryable, retries,
+      error: (r?.error || res.buf.trim().slice(-1500) || 'agy exited with code ' + res.code),
+      response: lastResponse, changes: workspaceChanges(j.cwd, before), endedAt: new Date().toISOString() });
     return;
   }
 }
@@ -327,10 +387,10 @@ function cmdStatus(o) {
   let jobs = listJobs();
   if (!o.all) jobs = jobs.filter((j) => !TERMINAL.has(j.status) || Date.now() - Date.parse(j.createdAt) < 24 * 3600_000).slice(0, 20);
   if (o.json) return out(JSON.stringify(jobs.map(({ response, ...r }) => r), null, 2));
-  const rows = ['| job | name | role | model | status | time |', '|---|---|---|---|---|---|'];
+  const rows = ['| job | name | role | model | status | error | time |', '|---|---|---|---|---|---|---|'];
   for (const j of jobs) {
     const end = j.endedAt ? Date.parse(j.endedAt) : Date.now();
-    rows.push('| ' + j.id + ' | ' + (j.name || '') + ' | ' + j.role + ' | ' + (j.model || '-') + ' | ' + j.status + ' | ' + Math.round((end - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's |');
+    rows.push('| ' + j.id + ' | ' + (j.name || '') + ' | ' + j.role + ' | ' + (j.model || '-') + ' | ' + j.status + (j.warning ? ' (warning)' : '') + ' | ' + (j.status === 'failed' ? (j.errorKind || 'error') + (j.retryable ? ' (retryable)' : '') + (j.changes?.changed ? ', workspace changed' : '') : (j.attempts || []).filter((a) => a.error).map((a) => a.error).join(',')) + ' | ' + Math.round((end - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's |');
   }
   out(jobs.length ? rows.join('\n') : 'no agy jobs');
 }

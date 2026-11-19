@@ -6,6 +6,7 @@ Use [Antigravity CLI](https://antigravity.google) (`agy`) from Claude Code as a 
 - **Two roles.** `code` (writes files, commits) and `review` (read-only, `--mode plan`). Recon is intentionally not delegated.
 - **Resumable sessions.** `name → conversation_id` registry; follow-ups continue the same agy conversation.
 - **Background jobs** with status / wait / result / cancel; a 30-minute hard timeout.
+- **Transient-error recovery.** Network drops (`EOF`, "network issue") and malformed function calls are retried automatically in the same conversation with a "continue where you stopped" turn (3 tries, 15/45/90 s; `AGY_RETRY_DELAYS`). An error after agy already gave its final `STATUS:` answer counts as done with a warning. A failed job reports the error kind, whether agy changed the workspace (new commits / dirty files) and agy's last text. agy's own log per job: `~/.claude/agy/jobs/<job>.agy.log`.
 - **Teammate proxy.** `agy:agy-proxy` (a haiku relay) makes agy a regular named member of a Claude Code agent team.
 - Runs agy with `--dangerously-skip-permissions` — agy executes commands without asking. Give it a git worktree for writing work.
 

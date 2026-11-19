@@ -20,12 +20,25 @@ if (p === '/usage') {
   process.exit(0);
 }
 const model = get('--model');
-const beh = sc.models?.[model] || 'ok';
+let beh = sc.models?.[model] || 'ok';
+if (Array.isArray(beh)) {
+  const n = fs.readFileSync(process.env.AGY_STUB_CALLS, 'utf8').trim().split('\n').filter((l) => JSON.parse(l).args.includes(model)).length - 1;
+  beh = beh[Math.min(n, beh.length - 1)];
+}
 const cid = get('--conversation') || 'conv-' + Math.random().toString(16).slice(2, 8);
 if (beh === 'sleep') { setTimeout(() => {}, 600000); }
 else if (beh === 'quota') {
   console.log('AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): quota exceeded","status":"RESOURCE_EXHAUSTED","error_code":429}');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'Resource has been exhausted (e.g. check quota).' }));
+  process.exit(1);
+} else if (beh === 'eof' || beh === 'eof-final' || beh === 'malformed') {
+  if (beh !== 'malformed') console.log('AGY_ERROR: {"short_error":"agent executor error: request failed: Post \\"https://x/v1internal:streamGenerateContent?alt=sse\\": EOF","status":"UNKNOWN","error_code":2,"retryable":true}');
+  const error = beh === 'malformed' ? 'Your previous response contained an improperly formatted function call: Malformed function call: Function call is empty' : 'There was a network issue connecting to the server, please try again.';
+  console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: beh === 'eof-final' ? 'STATUS: DONE\nall good' : 'working on it', error }));
+  process.exit(3);
+} else if (beh === 'write-fail') {
+  fs.writeFileSync('agy-was-here.txt', 'x');
+  console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'boom' }));
   process.exit(1);
 } else if (beh === 'fail') {
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'boom' }));

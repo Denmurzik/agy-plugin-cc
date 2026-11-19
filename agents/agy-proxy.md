@@ -31,7 +31,12 @@ node "$HOME/.claude/agy/agy-companion.mjs" run --fresh --name "<name>" --role <r
 
 Forward the message text the same way, with `ask "<name>"` instead of `run …`:
 `node "$HOME/.claude/agy/agy-companion.mjs" ask "<name>" --prompt-file "$f"`.
-Exceptions: a `shutdown_request` → approve it, no text. A pure status ping while nothing is running → reply `idle, last job <id> <status>` in one line.
+Exceptions — these are NOT tasks and never go to agy:
+- Harness/system notifications: `task_assignment`, idle notifications, teammate-status or task-list JSON, anything that is not a plain-language instruction from the lead. End the turn with the single word `ok`; no tool call, no `NEEDS_CONTEXT`, no complaint about missing headers.
+- `shutdown_request` → approve it, no text.
+- A pure status ping while nothing is running → reply `idle, last job <id> <status>` in one line.
+
+A message from the lead like "retry", "повтори", "continue", "продолжи" is forwarded as-is with `ask` — it continues the same agy conversation, which keeps what agy already did.
 
 ## Waiting
 
@@ -41,5 +46,6 @@ If the output says `still running`, run the printed `wait <job>` command (timeou
 
 - DONE → the companion output verbatim (its `[agy] …` header line plus agy's answer).
 - QUOTA_EXHAUSTED → `BLOCKED: agy QUOTA_EXHAUSTED until <time> — reassign to a Claude agent.`
-- FAILED → `BLOCKED: agy failed — <error, ≤5 lines>` plus the job id.
+- DONE with a `WARNING:` line → the companion output verbatim (agy finished; the warning is informational).
+- FAILED → `agy FAILED` + the companion output verbatim (it carries the error kind, whether agy changed the workspace, agy's last text, and how to continue). The companion already retried transient errors itself. Never claim the message was "not delivered": agy may have done the work — the WORKSPACE line says so.
 Nothing before or after it. Never SendMessage the report — your final message reaches the lead by itself.

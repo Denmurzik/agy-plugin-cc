@@ -15,7 +15,7 @@ function env(scenario) {
   const sc = path.join(dir, 'scenario.json');
   fs.writeFileSync(sc, JSON.stringify(scenario));
   return { dir, calls: path.join(dir, 'calls.jsonl'),
-    env: { ...process.env, AGY_STATE_DIR: path.join(dir, 'state'), AGY_BIN: FAKE, AGY_STUB_SCENARIO: sc, AGY_STUB_CALLS: path.join(dir, 'calls.jsonl'), AGY_USAGE_TTL_MS: '0' } };
+    env: { ...process.env, AGY_STATE_DIR: path.join(dir, 'state'), AGY_BIN: FAKE, AGY_STUB_SCENARIO: sc, AGY_STUB_CALLS: path.join(dir, 'calls.jsonl'), AGY_USAGE_TTL_MS: '0', AGY_RETRY_DELAYS: '0,0,0' } };
 }
 const run = (e, ...args) => spawnSync(process.execPath, [COMP, ...args], { env: e.env, encoding: 'utf8', cwd: e.dir, timeout: 60000 });
 const calls = (e) => fs.existsSync(e.calls) ? fs.readFileSync(e.calls, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => !c.args.includes('/usage')) : [];
@@ -116,4 +116,56 @@ test('background job can be waited on and cancelled', () => {
   assert.match(w.stdout, /still running/);
   assert.match(run(e, 'cancel', id).stdout, /cancelled/);
   assert.match(run(e, 'status', id).stdout, /CANCELLED/);
+});
+
+const modelOf = (c) => c.args[c.args.indexOf('--model') + 1];
+const convOf = (c) => (c.args.includes('--conversation') ? c.args[c.args.indexOf('--conversation') + 1] : null);
+
+test('network EOF is retried in the same conversation with a continue message', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['eof', 'ok'] } });
+  const r = run(e, 'run', '--role', 'code', '--name', 's1', 'task');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  const c = calls(e);
+  assert.equal(c.length, 2);
+  assert.ok(convOf(c[1]), 'retry must resume the conversation');
+  assert.match(c[1].args.at(-1), /cut off by a connection/);
+  assert.equal(modelOf(c[1]), 'gemini-4-neon-medium');
+  const s = JSON.parse(run(e, 'sessions', '--json').stdout);
+  assert.equal(s.s1.conversationId, convOf(c[1]));
+});
+
+test('malformed function call is retried too', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['malformed', 'ok'] } });
+  assert.match(run(e, 'run', '--role', 'code', 'x').stdout, /status=DONE/);
+});
+
+test('error after a final STATUS answer counts as done with a warning', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'eof-final' } });
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /status=DONE/);
+  assert.match(r.stdout, /WARNING: agy reported an error after its final answer/);
+  assert.match(r.stdout, /STATUS: DONE/);
+  assert.equal(calls(e).length, 1);
+});
+
+test('retries are bounded; failure keeps the conversation and explains itself', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'eof' } });
+  const r = run(e, 'run', '--role', 'code', '--name', 's2', 'x');
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /status=FAILED/);
+  assert.match(r.stdout, /ERROR \(network, retryable, after 3 auto-retries\)/);
+  assert.match(r.stdout, /LAST AGY TEXT:\nworking on it/);
+  assert.match(r.stdout, /ask s2 "continue"/);
+  assert.equal(calls(e).length, 4);
+  const cid = JSON.parse(run(e, 'sessions', '--json').stdout).s2.conversationId;
+  assert.ok(cid);
+  assert.match(run(e, 'status').stdout, /network \(retryable\)/);
+});
+
+test('failed job reports workspace changes made by agy', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'write-fail' } });
+  const g = (...a) => spawnSync('git', ['-C', e.dir, ...a], { encoding: 'utf8' });
+  g('init', '-q'); g('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /WORKSPACE: 0 new commit\(s\), \d+ uncommitted file\(s\) — agy DID work/);
 });
