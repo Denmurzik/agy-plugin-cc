@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -255,4 +255,40 @@ test('quota running out mid-work continues the same conversation on the next mod
   const c = calls(e);
   assert.ok(convOf(c[1]), 'conversation with done work must be kept');
   assert.match(c[1].args.at(-1), /cut off/);
+});
+
+test('a stream error in the agy log stalls the job fast, even while a tool is active', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['hang-eof', 'ok'] } });
+  e.env.AGY_EOF_GRACE_SEC = '1'; e.env.AGY_IDLE_SEC = '600'; e.env.AGY_TOOL_IDLE_SEC = '600';
+  const t0 = Date.now();
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  assert.ok(Date.now() - t0 < 30000);
+  assert.ok(convOf(calls(e)[1]));
+});
+
+test('a file tool gets the short limit, not the shell-command limit', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['hang-filetool', 'ok'] } });
+  e.env.AGY_FILE_TOOL_IDLE_SEC = '2'; e.env.AGY_IDLE_SEC = '600'; e.env.AGY_TOOL_IDLE_SEC = '600';
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  assert.match(calls(e)[1].args.at(-1), /write_file/);
+});
+
+test('stopping the streaming agent cancels its agy job', async () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'hang-tool' } });
+  e.env.AGY_EOF_GRACE_SEC = '1';
+  const p = spawn(process.execPath, [COMP, 'run', '--role', 'code', '--stream', 'x'], { env: e.env, cwd: e.dir });
+  let out = '';
+  p.stdout.on('data', (d) => { out += d; });
+  const t0 = Date.now();
+  while (!/@job (\S+)/.test(out) && Date.now() - t0 < 15000) await new Promise((r) => setTimeout(r, 100));
+  const id = out.match(/@job (\S+)/)[1];
+  await new Promise((r) => setTimeout(r, 1500));
+  p.kill();
+  const jf = path.join(e.dir, 'state', 'jobs', id + '.json');
+  let j;
+  for (let i = 0; i < 60; i++) { await new Promise((r) => setTimeout(r, 250)); j = JSON.parse(fs.readFileSync(jf, 'utf8')); if (j.status === 'cancelled') break; }
+  assert.equal(j.status, 'cancelled');
+  assert.match(j.error, /agent running this job was stopped/);
 });

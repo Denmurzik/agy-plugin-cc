@@ -40,6 +40,11 @@ const cid = get('--conversation') || 'conv-' + Math.random().toString(16).slice(
 if (STREAM) console.log(JSON.stringify({ event: 'init', conversation_id: cid }));
 if (beh === 'sleep') { setTimeout(() => {}, 600000); }
 else if (beh === 'hang') { setTimeout(() => {}, 600000); }
+else if (beh === 'hang-eof' || beh === 'hang-filetool') {
+  console.log(JSON.stringify({ event: 'step_update', step_update: { conversation_id: cid, step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'write_file', tool_info: { parameters: { TargetFile: 'a.txt' } } } }));
+  if (beh === 'hang-eof') setTimeout(() => fs.appendFileSync(get('--log-file'), 'E1120 agent executor error: generating and executing: stream reading error: unexpected EOF\n'), 300);
+  setTimeout(() => {}, 600000);
+}
 else if (beh === 'hang-tool') {
   console.log(JSON.stringify({ event: 'step_update', step_update: { conversation_id: cid, step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'npm run test:int' } } } }));
   setTimeout(() => {}, 600000);

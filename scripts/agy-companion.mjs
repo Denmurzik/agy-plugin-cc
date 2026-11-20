@@ -267,6 +267,8 @@ export function startJob({ name = null, role, cwd, prompt, forcedModel = null, t
 //   @job <id>   @progress <what agy is doing>   @done <json {status, model, header, text}>
 async function streamJob(job) {
   out('@job ' + job.id);
+  // the worker cancels agy when this process dies (the agent was stopped or interrupted)
+  if (!TERMINAL.has(job.status)) updateJob(job.id, { ownerPid: process.pid });
   let last = '';
   let j = job;
   while (!TERMINAL.has(j.status)) {
@@ -334,6 +336,8 @@ const IDLE_SEC = Number(process.env.AGY_IDLE_SEC || (CONFIG.idleMin ?? 20) * 60)
 const TOOL_IDLE_SEC = Number(process.env.AGY_TOOL_IDLE_SEC || (CONFIG.toolIdleMin ?? 60) * 60);
 // Read-only roles never run long builds: a command quiet for this long is hung (e.g. waiting on stdin).
 const ROLE_TOOL_IDLE_SEC = { recon: Number(process.env.AGY_RECON_TOOL_IDLE_SEC || (CONFIG.reconToolIdleMin ?? 3) * 60), review: Number(process.env.AGY_REVIEW_TOOL_IDLE_SEC || (CONFIG.reviewToolIdleMin ?? 15) * 60) };
+const EOF_GRACE_SEC = Number(process.env.AGY_EOF_GRACE_SEC || CONFIG.eofGraceSec || 90);
+const FILE_TOOL_IDLE_SEC = Number(process.env.AGY_FILE_TOOL_IDLE_SEC || (CONFIG.fileToolIdleMin ?? 5) * 60);
 const STALL_MSG = (t) => 'Your previous turn was stopped by the orchestrator because it made no progress for a long time' + (t ? ' while this command was running: ' + t.name + ' ' + t.detail : '') + '. Do NOT rerun that command as-is. First check why it hung (a service it needs may be down — e.g. Docker/DB not running; an interactive prompt; a watcher). Give long commands an explicit timeout. If a required service is unavailable, stop and report STATUS: BLOCKED with the reason. Otherwise continue the task from where you stopped without redoing finished steps.';
 const RETRY_DELAYS_S = (process.env.AGY_RETRY_DELAYS || (CONFIG.retryDelays || [15, 30, 60, 120, 240, 300]).join(',')).split(',').map(Number);
 const CONTINUE_MSG = 'Your previous turn was cut off by a connection / tool-call error on the agy side (not by you). Continue the task from exactly where you stopped — check the workspace state first, do not redo steps that are already done. If the task is already complete, just give your final answer in the required format.';
@@ -414,18 +418,51 @@ async function worker(id) {
         pending = lines.pop();
         for (const l of lines) { if (l.startsWith('{')) { try { onEvent(JSON.parse(l)); } catch {} } }
       };
-      // Stall watchdog: agy sometimes hangs forever after an internal stream EOF.
+      // Stall watchdog: agy sometimes hangs forever after an internal stream EOF (it never exits and
+      // never reports it on stdout; only its own log says so). Three triggers:
+      //  - its log shows a stream/executor error and no event followed it for EOF_GRACE_SEC;
+      //  - no event for the idle limit; a running shell command gets the long tool limit, any other
+      //    tool (file edits, reads, search) a short one: those never legitimately run for long;
+      //  - the process that streams this job (the Claude Code agent) is gone: the agent was stopped.
+      const agyLog = path.join(JOBS, id + '.agy.log');
+      let logSize = (() => { try { return fs.statSync(agyLog).size; } catch { return 0; } })();
+      let errorSeenAt = null;
+      const stall = (why) => {
+        buf += '\n[companion] stalled: ' + why + ', killing agy\n';
+        try { fs.appendFileSync(logF, '\n[companion] stalled (' + why + ')\n'); } catch {}
+        stalledTool = activeTool;
+        clearInterval(idle);
+        killTree(ch.pid);
+      };
       const idle = setInterval(() => {
-        const quiet = (Date.now() - lastEvent) / 1000;
-        const limit = activeTool ? Math.min(TOOL_IDLE_SEC, ROLE_TOOL_IDLE_SEC[j.role] ?? TOOL_IDLE_SEC) : IDLE_SEC;
-        if (quiet > limit) {
-          buf += '\n[companion] stalled: no agy progress for ' + Math.round(quiet) + 's' + (activeTool ? ' while running ' + activeTool.name + ' ' + activeTool.detail : '') + ', killing agy\n';
-          fs.appendFileSync(logF, '\n[companion] stalled (' + Math.round(quiet) + 's quiet' + (activeTool ? ', tool ' + activeTool.name + ' ' + activeTool.detail : '') + ')\n');
-          stalledTool = activeTool;
+        const cur = loadJob(id);
+        if (cur?.ownerPid && !alive(cur.ownerPid)) {
+          try { fs.appendFileSync(logF, '\n[companion] the agent that ran this job is gone (stopped) — cancelling agy\n'); } catch {}
           clearInterval(idle);
+          updateJob(id, { status: 'cancelled', error: 'the Claude Code agent running this job was stopped', endedAt: new Date().toISOString() });
           killTree(ch.pid);
+          return;
         }
-      }, Math.min(15_000, IDLE_SEC * 250));
+        try {
+          const size = fs.statSync(agyLog).size;
+          if (size > logSize) {
+            const fd = fs.openSync(agyLog, 'r');
+            const len = Math.min(size - logSize, 256 * 1024);
+            const b = Buffer.alloc(len);
+            fs.readSync(fd, b, 0, len, size - len);
+            fs.closeSync(fd);
+            logSize = size;
+            if (/stream reading error|agent executor error|unexpected EOF/i.test(b.toString('utf8'))) errorSeenAt = Date.now();
+          }
+        } catch {}
+        const quiet = (Date.now() - lastEvent) / 1000;
+        if (errorSeenAt && errorSeenAt >= lastEvent && (Date.now() - errorSeenAt) / 1000 > EOF_GRACE_SEC) return stall('agy logged a stream error and went silent for ' + Math.round(quiet) + 's');
+        const shell = activeTool && /command|terminal|shell|exec/i.test(activeTool.name);
+        const limit = !activeTool ? IDLE_SEC
+          : shell ? Math.min(TOOL_IDLE_SEC, ROLE_TOOL_IDLE_SEC[j.role] ?? TOOL_IDLE_SEC)
+          : Math.min(IDLE_SEC, FILE_TOOL_IDLE_SEC);
+        if (quiet > limit) stall('no agy progress for ' + Math.round(quiet) + 's' + (activeTool ? ' while running ' + activeTool.name + ' ' + activeTool.detail : ''));
+      }, Math.max(250, Math.min(15_000, Math.min(IDLE_SEC, EOF_GRACE_SEC) * 250)));
       const fin = (r) => { clearTimeout(hard); clearInterval(idle); resolve(r); };
       ch.stdout.on('data', onData);
       ch.stderr.on('data', (d) => { buf += d; fs.appendFileSync(logF, d); });
