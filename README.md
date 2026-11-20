@@ -8,7 +8,7 @@ Use [Antigravity CLI](https://antigravity.google) (`agy`) from Claude Code as a 
 - **Background jobs** with status / wait / result / cancel; a 2-hour limit per agy turn (`--timeout-min`, `AGY_TIMEOUT_MIN`, `timeoutMin` in config.json); a turn that hits it is continued in the same conversation like a network drop.
 - **Transient-error recovery.** Network drops (`EOF`, "network issue"), malformed function calls, per-turn timeouts and stalls are retried automatically in the same conversation with a "continue where you stopped" turn. Backoff 15/30/60/120/240/300 s (`retryDelays` in config.json, `AGY_RETRY_DELAYS`); the budget counts only *consecutive failures without progress* — a turn that completed tool steps resets it, so a long job survives any number of drops as long as it keeps moving. `503 No capacity` switches to the next model of the chain in the same conversation. If the background worker itself dies (parent process tree killed, crash, sleep), the next `wait`/`status` restarts it and it continues the conversation (up to 5 times). An error after agy already gave its final `STATUS:` answer counts as done with a warning. A failed job reports the error kind, whether agy changed the workspace (new commits / dirty files) and agy's last text. agy's own log per job: `~/.claude/agy/jobs/<job>.agy.log`.
 - **Stall watchdog.** agy runs with `--output-format stream-json`; `status`/`wait` show its current step (e.g. `run_command: npm test`). No agy activity for 20 min (60 min while a tool command is running) → agy is killed and the same conversation continues with "that command hung — check why, don't rerun it blindly, report BLOCKED if a service is down". Read-only roles get a much shorter command limit (recon 3 min, review 15 min — `reconToolIdleMin` / `reviewToolIdleMin`). Every task gets shell rules (explicit paths for rg/grep, never read stdin): agy's `rg` without a path hangs forever on Windows. Tune with `idleMin` / `toolIdleMin` in config.json or `AGY_IDLE_SEC` / `AGY_TOOL_IDLE_SEC`.
-- **Teammate proxy.** `agy:agy-proxy` (a haiku relay) makes agy a regular named member of a Claude Code agent team.
+- **Native teammate.** `team spawn` puts agy on the Claude Code agent team itself — no relay model in between: it shows in `ListAgents`, `SendMessage` reaches it, its reports arrive as teammate messages, `shutdown_request` stops it. agy gets an MCP server (`claude-team`) to ask the lead blocking questions, message teammates, read new messages mid-turn and update the shared task list. (Built on the agent-team file protocol of Claude Code: `~/.claude/teams/<team>/config.json` + `inboxes/`, `~/.claude/tasks/<team>/`; the legacy `agy:agy-proxy` haiku relay remains as a fallback.)
 - Runs agy with `--dangerously-skip-permissions` — agy executes commands without asking. Give it a git worktree for writing work.
 
 ## Requirements
@@ -36,7 +36,13 @@ Restart Claude Code. A SessionStart hook writes the stable entry point `~/.claud
 
 The `agy:antigravity` skill lets Claude delegate to agy on its own when a self-contained code or review task fits.
 
-As a teammate: spawn `subagent_type: "agy:agy-proxy"` with a `name`; the prompt starts with
+As a native teammate (inside an agent-team session):
+```
+node ~/.claude/agy/agy-companion.mjs team spawn --name agy-impl-1 --role code --cwd /abs/worktree [--task 3] --prompt-file brief.md
+```
+then `SendMessage` to `agy-impl-1` like any teammate. The lead polls its inbox only while a Claude teammate exists; if `team spawn` warns, spawn the keep-alive `Agent({ name: "agy-hub", subagent_type: "agy:agy-hub", model: "haiku", prompt: "hold" })`. On first session start the plugin registers the `claude-team` MCP server with agy (`agy mcp list`).
+
+Legacy relay: spawn `subagent_type: "agy:agy-proxy"` with a `name`; the prompt starts with
 ```
 agy-name: agy-impl-1
 agy-role: code

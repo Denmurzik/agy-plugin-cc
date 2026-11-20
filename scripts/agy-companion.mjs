@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import * as team from './team.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const STATE = process.env.AGY_STATE_DIR || path.join(os.homedir(), '.claude', 'agy');
@@ -24,6 +25,10 @@ export const CHAINS = {
 };
 const MODES = { code: null, review: 'plan', recon: 'plan' };
 const SHELL_RULES = ' Shell rules: commands must never wait for input — always give rg/grep/find/cat an explicit path (e.g. `rg -n pattern .`), never read stdin, never start servers/watchers/pagers/interactive prompts; prefer your built-in search/read tools over shell for searching.';
+const TEAM_PREAMBLE = (j) => 'You are "' + j.name + '", a member of a Claude Code agent team (team "' + j.team + '", lead "team-lead"; teammates are Claude agents and other agy agents). '
+  + 'The MCP server "claude-team" gives you the team: send_message (to team-lead or a teammate by name), ask_lead (a blocking question — use it instead of guessing when a requirement is ambiguous or you are blocked), '
+  + 'read_messages (new messages for you — check between major steps; the lead may redirect you), list_tasks / update_task (the shared task list). '
+  + 'Always pass as="' + j.name + '" and team="' + j.team + '" to these tools. Your final answer of every turn is delivered to the lead automatically — do not also send it with send_message.';
 const PREAMBLE = {
   code: 'You are a coding agent delegated a task by an orchestrating Claude Code agent. Work autonomously; do not ask for approval. Your final message is returned verbatim to the orchestrator: keep it short (status, what changed, how verified, concerns).' + SHELL_RULES,
   recon: 'You are a read-only investigator delegated a fact-finding task by an orchestrating Claude Code agent: search the code, read files and logs, collect facts. Do NOT modify, create or delete any files and do not write plans. Answer only what was asked, as a compact `file:line` table or at most 10 lines; no file dumps, no recommendations unless asked.' + SHELL_RULES,
@@ -237,34 +242,40 @@ function killTree(pid) {
   else try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch {} }
 }
 
+// Creates a job and starts its worker. Returns the job (status queued, or quota_exhausted without running agy).
+export function startJob({ name = null, role, cwd, prompt, forcedModel = null, timeoutMin, team = null }) {
+  const sess = name ? loadSessions()[name] : null;
+  if (!CHAINS[role]) throw new Error('--role must be code, review or recon');
+  if (!String(prompt || '').trim()) throw new Error('empty prompt');
+  const p = pickModel(role, getQuota(), { forced: forcedModel });
+  const id = newJobId();
+  const base = { id, name, role, cwd, team, forcedModel, timeoutMin: Number(timeoutMin || process.env.AGY_TIMEOUT_MIN || CONFIG.timeoutMin || 120),
+    conversationId: sess?.conversationId || null, createdAt: new Date().toISOString(), tried: [], attempts: [] };
+  fs.writeFileSync(path.join(JOBS, id + '.prompt.md'), prompt);
+  if (!p.model) {
+    const j = { ...base, status: 'quota_exhausted', resetAt: p.resetAt, endedAt: base.createdAt };
+    writeJson(jobFile(id), j);
+    return j;
+  }
+  writeJson(jobFile(id), { ...base, status: 'queued' });
+  if (name) updateSession(name, { role, cwd, lastJob: id, ...(team ? { team } : {}), ...(sess ? {} : { createdAt: new Date().toISOString() }) });
+  const w = spawnWorker(id);
+  return updateJob(id, { workerPid: w.pid });
+}
+
 async function cmdRun(o, { ask = false } = {}) {
   const name = ask ? o._.shift() : o.name;
   if (ask && !name) throw new Error('usage: ask <name> <prompt...>');
   let sess = name ? loadSessions()[name] : null;
-  if (ask && !sess) throw new Error('no agy session named "' + name + '"; start one with: run --name ' + name + ' --role code|review ...');
+  if (ask && !sess) throw new Error('no agy session named "' + name + '"; start one with: run --name ' + name + ' --role code|review|recon ...');
   if (o.fresh && sess) { updateSession(name, null); sess = null; }
   const role = o.role || sess?.role || 'code';
-  if (!CHAINS[role]) throw new Error('--role must be code, review or recon');
-  let prompt = o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
-  if (!prompt.trim()) throw new Error('empty prompt');
+  const prompt = o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
   const cwd = path.resolve(o.cwd || sess?.cwd || process.cwd());
-  const forced = o.model || null;
-  const q = getQuota();
-  const p = pickModel(role, q, { forced });
-  const id = newJobId();
-  const base = { id, name: name || null, role, cwd, forcedModel: forced, timeoutMin: Number(o['timeout-min'] || process.env.AGY_TIMEOUT_MIN || CONFIG.timeoutMin || 120), conversationId: sess?.conversationId || null,
-    createdAt: new Date().toISOString(), tried: [], attempts: [] };
-  fs.writeFileSync(path.join(JOBS, id + '.prompt.md'), prompt);
-  if (!p.model) {
-    const j = { ...base, status: 'quota_exhausted', resetAt: p.resetAt, endedAt: base.createdAt };
-    writeJson(jobFile(id), j); out(render(j, o)); process.exitCode = 4; return;
-  }
-  writeJson(jobFile(id), { ...base, status: 'queued' });
-  if (name) updateSession(name, { role, cwd, lastJob: id, ...(sess ? {} : { createdAt: new Date().toISOString() }) });
-  const w = spawnWorker(id);
-  updateJob(id, { workerPid: w.pid });
-  if (o.background) { out('[agy] job=' + id + (name ? ' name=' + name : '') + ' role=' + role + ' status=QUEUED\nNext: node "' + SELF + '" wait ' + id); return; }
-  const j = await waitJob(id, Number(o['wait-sec'] || 540));
+  const job = startJob({ name: name || null, role, cwd, prompt, forcedModel: o.model || null, timeoutMin: o['timeout-min'], team: sess?.team || null });
+  if (job.status === 'quota_exhausted') { out(render(job, o)); process.exitCode = 4; return; }
+  if (o.background) { out('[agy] job=' + job.id + (name ? ' name=' + name : '') + ' role=' + role + ' status=QUEUED\nNext: node "' + SELF + '" wait ' + job.id); return; }
+  const j = await waitJob(job.id, Number(o['wait-sec'] || 540));
   out(render(j, o));
   if (j.status === 'quota_exhausted') process.exitCode = 4;
   else if (j.status === 'failed') process.exitCode = 1;
@@ -331,7 +342,7 @@ async function worker(id) {
       model = p.model;
       tried.push(model);
     }
-    let text = pendingText || (cid ? promptText : PREAMBLE[j.role] + '\n\n---\n\n' + promptText);
+    let text = pendingText || (cid ? promptText : (j.team ? TEAM_PREAMBLE(j) + '\n\n' : '') + PREAMBLE[j.role] + '\n\n---\n\n' + promptText);
     if (text.length > MAX_ARG_PROMPT) {
       const pf = path.join(JOBS, id + '.full-prompt.md');
       fs.writeFileSync(pf, text);
@@ -354,7 +365,7 @@ async function worker(id) {
       let activeTool = null; // { name, detail, since } while a tool step is ACTIVE
       let lastProgressWrite = 0;
       let lastStep = null;
-      const ch = spawn(cmd, a, { cwd: j.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
+      const ch = spawn(cmd, a, { cwd: j.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MSYS_NO_PATHCONV: '1', ...(j.team ? { AGY_TEAM_NAME: j.team, AGY_TEAM_MEMBER: j.name } : {}) } });
       updateJob(id, { agyPid: ch.pid, progress: { at: new Date().toISOString(), step: 'starting' } });
       const hard = setTimeout(() => { buf += '\n[companion] hard timeout, killing agy\n'; killTree(ch.pid); }, (j.timeoutMin + 2) * 60_000);
       const onEvent = (ev) => {
@@ -498,6 +509,141 @@ function cmdSessions(o) {
     ...names.map((n) => '| ' + n + ' | ' + s[n].role + ' | ' + (s[n].conversationId || '-') + ' | ' + (s[n].lastModel || '-') + ' | ' + s[n].cwd + ' | ' + fmtTime(s[n].updatedAt) + ' |')].join('\n'));
 }
 
+
+// ---------- agy as a native agent-team member ----------
+const BRIDGE_POLL_MS = Number(process.env.AGY_BRIDGE_POLL_MS || 1500);
+function bridgeAlive(sess) { return !!sess?.bridgePid && alive(sess.bridgePid); }
+function spawnBridge(teamName, name) {
+  const b = spawn(process.execPath, [SELF, '_bridge', teamName, name], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
+  b.unref();
+  updateSession(name, { bridgePid: b.pid });
+  return b.pid;
+}
+// Restart bridges that died while their member is still on the team (called opportunistically by every command).
+function reviveBridges() {
+  for (const [name, s] of Object.entries(loadSessions())) {
+    if (!s?.team || bridgeAlive(s)) continue;
+    let m = null; try { m = team.findMember(s.team, name); } catch {}
+    if (m && team.isAgyMember(m)) withLock('bridge-' + name, () => { if (!bridgeAlive(loadSessions()[name])) spawnBridge(s.team, name); });
+  }
+}
+function messageToPrompt(m) {
+  const p = team.protocolOf(m);
+  if (p?.type === 'task_assignment') return 'The lead assigned you task #' + p.taskId + ': ' + p.subject + (p.description ? '\n' + p.description : '');
+  return (m.from && m.from !== team.LEAD ? 'Message from teammate ' + m.from + ':\n' : '') + m.text;
+}
+function reportText(j) {
+  const head = render(j);
+  return head.replace(/^\[agy\] [^\n]*\n?/, '').trim() || head;
+}
+function reportSummary(j) {
+  const st = j.status === 'done' ? (j.warning ? 'done (warning)' : 'done') : j.status;
+  const first = String(j.response || j.error || '').split('\n').find((l) => l.trim()) || '';
+  return (st + ': ' + first).slice(0, 120);
+}
+
+async function cmdTeam(o) {
+  const sub = o._.shift();
+  if (sub === 'spawn') {
+    const name = o.name || o._.shift();
+    if (!name || !/^[\w.-]{1,64}$/.test(name)) throw new Error('--name <name> required (letters, digits, - _ .)');
+    const role = o.role || 'code';
+    if (!CHAINS[role]) throw new Error('--role must be code, review or recon');
+    const teamName = team.resolveTeam(o.team);
+    const prompt = o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
+    if (!prompt.trim()) throw new Error('empty task: pass --prompt-file or text');
+    const p = pickModel(role, getQuota(), { forced: o.model || null });
+    if (!p.model) { out('QUOTA_EXHAUSTED: no agy model for role "' + role + '" until ' + (p.resetAt || '?') + ' (' + fmtTime(p.resetAt) + ') — use a Claude teammate instead.'); process.exitCode = 4; return; }
+    const cwd = path.resolve(o.cwd || process.cwd());
+    const old = loadSessions()[name];
+    if (old?.team && old.team !== teamName && bridgeAlive(old)) throw new Error('the name "' + name + '" is in use by an agy teammate of another session (' + old.team + '); pick another name');
+    if (old?.bridgePid && alive(old.bridgePid)) killTree(old.bridgePid);
+    updateSession(name, null);
+    updateSession(name, { role, cwd, team: teamName, forcedModel: o.model || null, timeoutMin: o['timeout-min'] || null, createdAt: new Date().toISOString(), taskId: o.task || null });
+    team.addMember(teamName, { name, role, cwd, model: p.model });
+    if (o.task) { try { team.updateTask(teamName, o.task, { owner: name, status: 'in_progress' }); } catch (e) { out('note: task #' + o.task + ' not updated: ' + e.message); } }
+    team.postMessage(teamName, name, team.LEAD, prompt, { summary: 'initial task' });
+    spawnBridge(teamName, name);
+    const lines = [name + ' joined team ' + teamName + ' as an agy ' + role + ' teammate (model ' + p.model + ') and is working.',
+      'Its report arrives as a message from ' + name + '. Follow-ups: SendMessage to "' + name + '". Stop it: SendMessage a shutdown_request, or: node "' + SELF + '" team stop ' + name + '.'];
+    if (!team.claudeTeammates(teamName).length) lines.push('WARNING: no Claude teammate is running, so the lead does not poll its inbox and agy reports would wait. Spawn the keep-alive first: Agent({ name: "agy-hub", subagent_type: "agy:agy-hub", model: "haiku", prompt: "hold" }).');
+    out(lines.join('\n'));
+    return;
+  }
+  if (sub === 'stop') {
+    const name = o._.shift();
+    const s = loadSessions()[name];
+    if (!s?.team) throw new Error('no agy teammate named ' + name);
+    stopMember(s.team, name, 'stopped by lead');
+    out('stopped ' + name);
+    return;
+  }
+  if (sub === 'ls' || !sub) {
+    const rows = Object.entries(loadSessions()).filter(([, s]) => s?.team).map(([n, s]) => {
+      const j = s.lastJob ? loadJob(s.lastJob) : null;
+      return '| ' + n + ' | ' + s.team + ' | ' + s.role + ' | ' + (bridgeAlive(s) ? 'up' : 'down') + ' | ' + (j ? j.status + (j.progress && !TERMINAL.has(j.status) ? ' — ' + String(j.progress.step).slice(0, 50) : '') : '-') + ' |';
+    });
+    out(rows.length ? ['| name | team | role | bridge | last job |', '|---|---|---|---|---|', ...rows].join('\n') : 'no agy teammates');
+    return;
+  }
+  throw new Error('usage: team spawn|stop|ls');
+}
+function stopMember(teamName, name, why) {
+  const s = loadSessions()[name];
+  const j = s?.lastJob ? loadJob(s.lastJob) : null;
+  if (j && !TERMINAL.has(j.status)) { updateJob(j.id, { status: 'cancelled', error: why, endedAt: new Date().toISOString() }); killTree(j.agyPid); killTree(j.workerPid); }
+  team.removeMember(teamName, name);
+  if (s?.bridgePid && s.bridgePid !== process.pid && alive(s.bridgePid)) killTree(s.bridgePid);
+  updateSession(name, { bridgePid: null, stoppedAt: new Date().toISOString() });
+}
+
+async function bridge(teamName, name) {
+  const logF = path.join(STATE, 'bridge-' + name + '.log');
+  const log = (m) => { try { fs.appendFileSync(logF, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
+  process.on('uncaughtException', (e) => log('exception (ignored): ' + (e?.stack || e)));
+  updateSession(name, { bridgePid: process.pid });
+  log('bridge up for ' + name + ' on ' + teamName);
+  let leadGoneSince = null;
+  for (;;) {
+    await sleep(BRIDGE_POLL_MS);
+    const sess = loadSessions()[name];
+    if (!sess || sess.team !== teamName || (sess.bridgePid && sess.bridgePid !== process.pid)) { log('superseded, exiting'); return; }
+    const cfg = team.getConfig(teamName);
+    if (!cfg || !cfg.members?.some((m) => m.name === name && team.isAgyMember(m))) { log('no longer a member, exiting'); stopMember(teamName, name, 'removed from team'); return; }
+    const leadPid = cfg.leadProcess?.pid;
+    if (leadPid && !alive(leadPid)) { leadGoneSince ??= Date.now(); if (Date.now() - leadGoneSince > 15 * 60_000) { log('lead gone, exiting'); stopMember(teamName, name, 'lead session ended'); return; } }
+    else leadGoneSince = null;
+
+    // Shutdown requests are handled at once, even mid-turn.
+    const shut = team.takeUnread(teamName, name, (m) => team.protocolOf(m)?.type === 'shutdown_request');
+    if (shut.length) {
+      const req = team.protocolOf(shut[0]);
+      stopMember(teamName, name, 'shutdown requested');
+      team.postMessage(teamName, team.LEAD, name, JSON.stringify({ type: 'shutdown_approved', requestId: req.requestId, from: name, timestamp: new Date().toISOString(), paneId: 'agy:' + name, backendType: 'tmux' }));
+      log('shutdown approved');
+      return;
+    }
+
+    let j = sess.lastJob ? refreshLiveness(loadJob(sess.lastJob)) : null;
+    if (j && !TERMINAL.has(j.status)) continue; // agy is working; new messages wait (agy can read them via read_messages)
+    if (j && sess.reportedJob !== j.id) {
+      team.postMessage(teamName, team.LEAD, name, reportText(j), { summary: reportSummary(j) });
+      updateSession(name, { reportedJob: j.id });
+      log('reported job ' + j.id + ' (' + j.status + ')');
+      if (sess.taskId && j.status !== 'done') { try { team.updateTask(teamName, sess.taskId, { activeForm: name + ': ' + j.status }); } catch {} }
+      continue;
+    }
+    // Ignore harness notifications that are not instructions; everything else becomes the next agy turn.
+    const msgs = team.takeUnread(teamName, name, (m) => { const p = team.protocolOf(m); return !p || p.type === 'task_assignment'; });
+    team.takeUnread(teamName, name, (m) => { const t = team.protocolOf(m)?.type; return t && t !== 'shutdown_request' && t !== 'task_assignment'; });
+    if (!msgs.length) continue;
+    const prompt = msgs.map(messageToPrompt).join('\n\n---\n\n');
+    const job = startJob({ name, role: sess.role, cwd: sess.cwd, prompt, forcedModel: sess.forcedModel || null, timeoutMin: sess.timeoutMin, team: teamName });
+    log('started job ' + job.id + ' (' + job.status + ') for ' + msgs.length + ' message(s)');
+    if (job.status === 'quota_exhausted') { team.postMessage(teamName, team.LEAD, name, reportText(job), { summary: 'quota exhausted' }); updateSession(name, { reportedJob: job.id }); }
+  }
+}
+
 const HELP = 'agy-companion <command>\n' +
   '  run   --role code|review|recon [--name N] [--fresh] [--cwd DIR] [--model M] [--timeout-min 120] [--background] [--wait-sec 540] [--prompt-file F | prompt...]\n' +
   '  ask   <name> [--prompt-file F | prompt...]     continue a named session (same conversation)\n' +
@@ -505,11 +651,14 @@ const HELP = 'agy-companion <command>\n' +
   '  status [job] [--all] [--json] | result <job> | cancel [job]\n' +
   '  usage [--json]                                 quota per group + model each role would get\n' +
   '  pick  <role> [--refresh] [--json]               model for a role or QUOTA_EXHAUSTED (exit 4)\n' +
-  '  sessions [--json] | forget <name>';
+  '  sessions [--json] | forget <name>\n' +
+  '  team spawn --name N --role code|review|recon [--cwd DIR] [--task ID] [--team T] [--model M] (--prompt-file F | text)\n' +
+  '  team stop <name> | team ls                       agy as a native member of the current Claude Code agent team';
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const o = parseArgs(rest);
+  if (cmd && !cmd.startsWith('_')) { try { reviveBridges(); } catch {} }
   switch (cmd) {
     case 'run': return cmdRun(o);
     case 'ask': return cmdRun(o, { ask: true });
@@ -520,6 +669,8 @@ async function main() {
     case 'usage': return cmdUsage(o);
     case 'pick': return cmdPick(o);
     case 'sessions': return cmdSessions(o);
+    case 'team': return cmdTeam(o);
+    case '_bridge': return bridge(o._[0], o._[1]);
     case 'forget': updateSession(o._[0], null); return out('forgot ' + o._[0]);
     case '_worker':
       process.on('uncaughtException', (e) => { try { fs.appendFileSync(path.join(JOBS, o._[0] + '.log'), '\n[companion] worker exception (ignored): ' + (e?.stack || e) + '\n'); } catch {} });

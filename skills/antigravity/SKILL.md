@@ -35,15 +35,14 @@ Before routing, `node "$C" pick code` / `pick review` (≈5 s, 0 tokens): prints
 `node "$C" run --role code|review|recon --cwd "<project dir>" --prompt-file "<file>"`
 It waits up to 9 min; if it prints `still running`, call the printed `wait <job>` again. Use `--background` and later `wait` to run it beside other work.
 
-**Teammate / resumable** (you will send follow-ups): spawn the `agy:agy-proxy` agent (with a `name` inside an agent team, or as a plain subagent). Its prompt starts with the header:
+**Teammate** (you will send follow-ups, or it works beside other teammates): put agy on this session's agent team — one Bash call, no `Agent` spawn:
 ```
-agy-name: <unique session name, e.g. agy-impl-3>
-agy-role: code | review | recon
-agy-cwd: <absolute dir — a worktree for code in git repos>
----
-<self-contained task for agy>
+node "$C" team spawn --name agy-impl-3 --role code|review|recon --cwd "<abs dir — a worktree for code in git repos>" [--task <task-list id>] --prompt-file "<task file>"
 ```
-Follow-ups: `SendMessage` to the proxy (it forwards to the same agy conversation). Outside teams: `node "$C" ask <name> --prompt-file F`.
+It is then a real member: `ListAgents` shows it, `SendMessage` to its name reaches it (same agy conversation), its report arrives by itself as a message from it. agy gets team tools (MCP server `claude-team`): it can ask you a blocking question (`QUESTION (I am blocked…` — answer with `SendMessage`), message peers, read new messages mid-turn, update its task. Stop: `SendMessage` `{type: "shutdown_request"}` or `node "$C" team stop <name>`; `node "$C" team ls` shows what each agy teammate is doing.
+The lead only polls its inbox while a Claude teammate exists — if `team spawn` warns about it, spawn `Agent({ name: "agy-hub", subagent_type: "agy:agy-hub", model: "haiku", prompt: "hold" })` once.
+
+**Resumable without a team:** `node "$C" run --name <n> …`, then `node "$C" ask <n> --prompt-file F` (or `/agy:ask`). The `agy:agy-proxy` agent is the legacy relay for setups where the native team mode is unavailable.
 
 ## Writing the task for agy
 

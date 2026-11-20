@@ -23,7 +23,7 @@
   (`name → conversation_id`), фоновые задачи (лимит хода 120 мин; ход, упёршийся в лимит, продолжается в том же разговоре), status/result/cancel.
   Состояние: `~/.claude/agy/` (quota.json, sessions.json, jobs/).
 - Команды: `/agy:run`, `/agy:ask`, `/agy:status`, `/agy:result`, `/agy:cancel`, `/agy:usage`.
-- Агент `agy:agy-proxy` (haiku, только Bash) — тонкий прокси: делает agy именованным тимейтом команды.
+- agy — нативный участник команды Claude Code: `team spawn` вписывает его в `~/.claude/teams/<team>/config.json` (backendType tmux), мост (Node, без LLM) читает его `inboxes/<name>.json`, запускает ходы agy и кладёт отчёты в почту лида; MCP-сервер `claude-team` даёт agy ask_lead / send_message / read_messages / list_tasks / update_task. Лид опрашивает почту, только пока есть Claude-тимейт → keep-alive `agy:agy-hub` (haiku). `agy:agy-proxy` — устаревший запасной вариант.
   Ждёт задачу порциями по 9 мин (лимит Bash 10 мин).
 - Скилл `agy:antigravity` — когда и как отдавать работу agy. Проактивно везде.
   agy — равноправный исполнитель; как «второе мнение» — только по прямой просьбе пользователя.
