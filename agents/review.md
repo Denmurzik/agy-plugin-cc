@@ -1,6 +1,6 @@
 ---
 name: review
-description: Antigravity (agy) read-only reviewer/analyst on Gemini 4 Argon: code review, architecture and debugging analysis, explaining code. Never edits files. Runs on the Google AI Pro quota, not on Claude limits. Not a second opinion on Claude work unless the user asks.
+description: Antigravity (agy) read-only reviewer/analyst on Gemini 4 Neon: code review, architecture and debugging analysis, explaining code. Never edits files. Runs on the Google AI Pro quota, not on Claude limits. Not a second opinion on Claude work unless the user asks.
 model: haiku
 tools: Read
 ---

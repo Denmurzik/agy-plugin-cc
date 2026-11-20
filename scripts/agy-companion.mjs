@@ -19,7 +19,7 @@ const MAX_ARG_PROMPT = 20_000;
 
 export const CHAINS = {
   code: ['gemini-4-neon-medium', 'claude-sonnet-5-5-medium', 'gemini-4-argon-medium'],
-  review: ['gemini-4-argon-medium'],
+  review: ['gemini-4-neon-medium'],
   recon: ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-low'],
   ...(CONFIG.chains || {}),
 };

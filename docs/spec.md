@@ -10,7 +10,7 @@
   | Роль | Режим agy | Цепочка моделей |
   |---|---|---|
   | `code` (запись) | обычный | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
-  | `review` (анализ/ревью, чтение) | `--mode plan` | gemini-4-argon-medium |
+  | `review` (анализ/ревью, чтение) | `--mode plan` | gemini-4-neon-medium |
   | `recon` (разведка, чтение) | `--mode plan` | gemini-4-hydrogen-medium → claude-sonnet-5-5-low |
   Разведка — разовые вызовы, вопросы пачкой; одиночный grep делается локально, при пустой квоте — Claude haiku.
 - Каждый вызов agy идёт с `--dangerously-skip-permissions`. Глобальные настройки agy не трогаются.

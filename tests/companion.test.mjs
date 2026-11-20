@@ -42,7 +42,7 @@ test('pickModel walks the chain and skips groups under threshold', () => {
   const p = lib.pickModel('code', q);
   assert.equal(p.model, null);
   assert.equal(p.resetAt, fut);
-  assert.equal(lib.pickModel('review', { groups: {}, blocked: {} }).model, 'gemini-4-argon-medium');
+  assert.equal(lib.pickModel('review', { groups: {}, blocked: {} }).model, 'gemini-4-neon-medium');
   assert.equal(lib.pickModel('recon', q).model, null); // flash (gemini) and sonnet (3p) are both out here
   assert.equal(lib.pickModel('recon', { groups: {}, blocked: {} }).model, 'gemini-4-hydrogen-medium');
   assert.throws(() => lib.pickModel('nope', q));
@@ -77,13 +77,13 @@ test('all quota exhausted -> exit 4 and agy is not called', () => {
   assert.match(u.stdout, /code: QUOTA_EXHAUSTED/);
 });
 
-test('review role uses argon in plan mode; never other models', () => {
-  const e = env({ usage: { argon: [0.01] } });
+test('review role uses neon in plan mode; never other models', () => {
+  const e = env({ usage: { gemini: [0.01, 1] } });
   const r = run(e, 'run', '--role', 'review', 'x');
   assert.equal(r.status, 4);
   const e2 = env({});
   const r2 = run(e2, 'run', '--role', 'review', 'look');
-  assert.match(r2.stdout, /OK from gemini-4-argon-medium mode=plan/);
+  assert.match(r2.stdout, /OK from gemini-4-neon-medium mode=plan/);
 });
 
 test('named session: ask continues the same conversation, even across a model switch', () => {

@@ -16,7 +16,7 @@ Default chains below; the user may override them in `~/.claude/agy/config.json` 
 | Work | agy role | Model chain (auto) |
 |---|---|---|
 | Implementation against a clear spec, bugfix, tests, mechanical multi-file change | `code` | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
-| Review, analysis, architecture/debug reasoning, explaining code (read-only) | `review` (`--mode plan`) | gemini-4-argon-medium only |
+| Review, analysis, architecture/debug reasoning, explaining code (read-only) | `review` (`--mode plan`) | gemini-4-neon-medium |
 | Recon: code search, "where is X", collecting facts, reading logs (read-only, answer as `file:line` table / ≤10 lines) | `recon` (`--mode plan`) | gemini-4-hydrogen-medium → claude-sonnet-5-5-low |
 
 Never to agy:

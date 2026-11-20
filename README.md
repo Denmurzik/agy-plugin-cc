@@ -1,5 +1,7 @@
 # agy-plugin-cc — Antigravity CLI inside Claude Code
 
+![agy-plugin-cc — Antigravity agents as native Claude Code subagents & teammates](assets/cover.png)
+
 Use [Antigravity CLI](https://antigravity.google) (`agy`) from Claude Code as a **peer worker**: a one-shot subagent, or a **named teammate** you can message again — on your Google AI subscription quota instead of your Claude limits.
 
 - **Quota-aware.** Before every call it reads `agy /usage` (free, 0 tokens) and walks a model chain, skipping any model whose quota group is below 5 %. A quota error mid-session switches to the next model **in the same conversation**. When every model of a role is out, it returns `QUOTA_EXHAUSTED` with the reset time and does not call agy until then.
@@ -61,7 +63,7 @@ Defaults (Google AI Pro, agy 1.5.x model ids — see `agy models`):
 | Role | Chain |
 |---|---|
 | `code` | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
-| `review` | gemini-4-argon-medium |
+| `review` | gemini-4-neon-medium |
 | `recon` | gemini-4-hydrogen-medium → claude-sonnet-5-5-low |
 
 Override in `~/.claude/agy/config.json`:
