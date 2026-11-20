@@ -209,3 +209,39 @@ test('running job shows live progress in wait/status', () => {
   assert.match(w.stdout, /now: run_command: npm run test:int/);
   run(e, 'cancel', id);
 });
+
+test('503 no-capacity moves to the next model in the same conversation', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['ok', 'capacity'] } });
+  run(e, 'run', '--role', 'code', '--name', 'cap', 'first');
+  const r = run(e, 'ask', 'cap', 'second');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  const c = calls(e);
+  assert.equal(modelOf(c.at(-1)), 'claude-sonnet-5-5-medium');
+  assert.ok(convOf(c.at(-1)));
+  assert.match(c.at(-1).args.at(-1), /cut off/);
+});
+
+test('errors after real progress do not use up the retry budget', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['eof-progress', 'eof-progress', 'eof-progress', 'eof-progress', 'ok'] } });
+  e.env.AGY_RETRY_DELAYS = '0';
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  assert.equal(calls(e).length, 5);
+});
+
+test('a dead worker is restarted and continues the same conversation', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['hang-tool', 'ok'] } });
+  const r = run(e, 'run', '--role', 'code', '--name', 'rv', '--background', 'x');
+  const id = r.stdout.match(/job=(\S+)/)[1];
+  run(e, 'wait', id, '--wait-sec', '3');
+  const jf = path.join(e.dir, 'state', 'jobs', id + '.json');
+  const pid = JSON.parse(fs.readFileSync(jf, 'utf8')).workerPid;
+  process.kill(pid);
+  const w = run(e, 'wait', id, '--wait-sec', '40');
+  assert.match(w.stdout, /status=DONE/, w.stdout);
+  const j = JSON.parse(fs.readFileSync(jf, 'utf8'));
+  assert.equal(j.revivals, 1);
+  const c = calls(e);
+  assert.ok(convOf(c.at(-1)));
+  assert.match(c.at(-1).args.at(-1), /cut off/);
+});

@@ -48,6 +48,15 @@ else if (beh === 'quota') {
   console.log('AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): quota exceeded","status":"RESOURCE_EXHAUSTED","error_code":429}');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'Resource has been exhausted (e.g. check quota).' }));
   process.exit(1);
+} else if (beh === 'capacity') {
+  console.log('AGY_ERROR: {"short_error":"UNAVAILABLE (code 503): No capacity available for model ' + model + ' on the server","status":"UNAVAILABLE","error_code":503,"retryable":true}');
+  console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'No capacity available for model ' + model + ' on the server' }));
+  process.exit(3);
+} else if (beh === 'eof-progress') {
+  console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'write_to_file' } }));
+  console.log('AGY_ERROR: {"short_error":"request failed: EOF","status":"UNKNOWN","retryable":true}');
+  console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: 'partial', error: 'There was a network issue connecting to the server, please try again.' }));
+  process.exit(3);
 } else if (beh === 'eof' || beh === 'eof-final' || beh === 'malformed') {
   if (beh !== 'malformed') console.log('AGY_ERROR: {"short_error":"agent executor error: request failed: Post \\"https://x/v1internal:streamGenerateContent?alt=sse\\": EOF","status":"UNKNOWN","error_code":2,"retryable":true}');
   const error = beh === 'malformed' ? 'Your previous response contained an improperly formatted function call: Malformed function call: Function call is empty' : 'There was a network issue connecting to the server, please try again.';

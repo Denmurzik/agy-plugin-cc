@@ -35,7 +35,7 @@ function writeJson(f, v) {
   const tmp = f + '.' + process.pid + '.' + crypto.randomBytes(3).toString('hex') + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(v, null, 2));
   for (let i = 0; ; i++) {
-    try { fs.renameSync(tmp, f); return; } catch (e) { if (i > 20) throw e; sleepSync(25); }
+    try { fs.renameSync(tmp, f); return; } catch (e) { if (i > 200) throw e; sleepSync(25); }
   }
 }
 function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
@@ -184,10 +184,25 @@ const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('ru-RU', { dateStyle
 // ---------- jobs ----------
 function newJobId() { return new Date().toISOString().replace(/[-:T]/g, '').slice(2, 12) + '-' + crypto.randomBytes(2).toString('hex'); }
 function alive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
+const MAX_REVIVALS = 5;
 function refreshLiveness(j) {
-  if (j && !TERMINAL.has(j.status) && j.workerPid && !alive(j.workerPid) && Date.now() - Date.parse(j.createdAt) > 10_000)
-    return updateJob(j.id, { status: 'failed', error: 'worker process died', endedAt: new Date().toISOString() });
-  return j;
+  if (!j || TERMINAL.has(j.status) || !j.workerPid || alive(j.workerPid) || Date.now() - Date.parse(j.createdAt) < 10_000) return j;
+  // The worker died (killed with its parent's process tree, crashed, machine slept…). Restart it: it continues the
+  // same agy conversation, so work agy already did is kept.
+  return withLock('revive-' + j.id, () => {
+    const cur = loadJob(j.id);
+    if (TERMINAL.has(cur.status) || alive(cur.workerPid)) return cur;
+    if ((cur.revivals || 0) >= MAX_REVIVALS) return updateJob(j.id, { status: 'failed', errorKind: 'worker_died', error: 'worker process died ' + (MAX_REVIVALS + 1) + ' times', changes: null, endedAt: new Date().toISOString() });
+    if (cur.agyPid && alive(cur.agyPid)) killTree(cur.agyPid);
+    try { fs.appendFileSync(path.join(JOBS, j.id + '.log'), '\n[companion ' + new Date().toISOString() + '] worker died — restarting it (revival ' + ((cur.revivals || 0) + 1) + ')\n'); } catch {}
+    const w = spawnWorker(j.id);
+    return updateJob(j.id, { workerPid: w.pid, revivals: (cur.revivals || 0) + 1, status: 'running' });
+  });
+}
+function spawnWorker(id) {
+  const w = spawn(process.execPath, [SELF, '_worker', id], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
+  w.unref();
+  return w;
 }
 function render(j, { json } = {}) {
   if (json) return JSON.stringify(j, null, 2);
@@ -243,8 +258,7 @@ async function cmdRun(o, { ask = false } = {}) {
   }
   writeJson(jobFile(id), { ...base, status: 'queued' });
   if (name) updateSession(name, { role, cwd, lastJob: id, ...(sess ? {} : { createdAt: new Date().toISOString() }) });
-  const w = spawn(process.execPath, [SELF, '_worker', id], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
-  w.unref();
+  const w = spawnWorker(id);
   updateJob(id, { workerPid: w.pid });
   if (o.background) { out('[agy] job=' + id + (name ? ' name=' + name : '') + ' role=' + role + ' status=QUEUED\nNext: node "' + SELF + '" wait ' + id); return; }
   const j = await waitJob(id, Number(o['wait-sec'] || 540));
@@ -260,6 +274,7 @@ export function classifyError(r, buf) {
   let agyErr = null;
   const m = String(buf || '').match(/AGY_ERROR: (\{.*\})/g);
   if (m) { try { agyErr = JSON.parse(m.at(-1).slice('AGY_ERROR: '.length)); } catch {} }
+  if (/No capacity available|\b503\b|overloaded|try again later/i.test(text) && !/\bEOF\b/.test(r?.error || '')) return { kind: 'capacity', retryable: true };
   if (/Malformed function call|improperly formatted function call/i.test(text)) return { kind: 'malformed_call', retryable: true };
   if (/network issue|\bEOF\b|connection reset|UNAVAILABLE|\b50[234]\b|deadline exceeded|stream (?:closed|error)/i.test(text)) return { kind: 'network', retryable: true };
   if (/print[ _]timeout|DEADLINE_EXCEEDED|stream was interrupted/i.test(text)) return { kind: 'turn_timeout', retryable: true };
@@ -287,7 +302,7 @@ function workspaceChanges(cwd, before) {
 const IDLE_SEC = Number(process.env.AGY_IDLE_SEC || (CONFIG.idleMin ?? 20) * 60);
 const TOOL_IDLE_SEC = Number(process.env.AGY_TOOL_IDLE_SEC || (CONFIG.toolIdleMin ?? 60) * 60);
 const STALL_MSG = (t) => 'Your previous turn was stopped by the orchestrator because it made no progress for a long time' + (t ? ' while this command was running: ' + t.name + ' ' + t.detail : '') + '. Do NOT rerun that command as-is. First check why it hung (a service it needs may be down — e.g. Docker/DB not running; an interactive prompt; a watcher). Give long commands an explicit timeout. If a required service is unavailable, stop and report STATUS: BLOCKED with the reason. Otherwise continue the task from where you stopped without redoing finished steps.';
-const RETRY_DELAYS_S = (process.env.AGY_RETRY_DELAYS || '15,45,90').split(',').map(Number);
+const RETRY_DELAYS_S = (process.env.AGY_RETRY_DELAYS || (CONFIG.retryDelays || [15, 30, 60, 120, 240, 300]).join(',')).split(',').map(Number);
 const CONTINUE_MSG = 'Your previous turn was cut off by a connection / tool-call error on the agy side (not by you). Continue the task from exactly where you stopped — check the workspace state first, do not redo steps that are already done. If the task is already complete, just give your final answer in the required format.';
 
 async function worker(id) {
@@ -295,12 +310,12 @@ async function worker(id) {
   const promptText = fs.readFileSync(path.join(JOBS, id + '.prompt.md'), 'utf8');
   const logF = path.join(JOBS, id + '.log');
   const before = gitSnap(j.cwd);
-  let cid = j.conversationId;
+  let cid = j.conversationId || (j.revivals ? j.turnConversationId : null) || null;
   const tried = [];
   let model = null;
   let switchModel = true;
   let retries = 0;
-  let pendingText = null; // set when the next turn is a "continue" after a transient error
+  let pendingText = j.revivals && cid ? CONTINUE_MSG : null; // "continue" turn after a transient error or a worker restart
   let lastResponse = '';
   const saveCid = (c) => { if (!c || c === cid) return; cid = c; updateJob(id, { conversationId: cid }); if (j.name) updateSession(j.name, { conversationId: cid }); };
   for (;;) {
@@ -318,6 +333,7 @@ async function worker(id) {
       text = 'Your full task is in the file ' + pf + ' — read it completely first, then do exactly what it says.';
     }
     let stalledTool = null;
+    let turnSteps = 0; // tool steps completed in this turn
     let turnCid = null; // conversation of this turn, known from the stream's init event
     const args = ['--model', model, '--output-format', 'stream-json', '--dangerously-skip-permissions', '--print-timeout', j.timeoutMin + 'm', '--log-file', path.join(JOBS, id + '.agy.log')];
     if (MODES[j.role]) args.push('--mode', MODES[j.role]);
@@ -338,8 +354,9 @@ async function worker(id) {
       const hard = setTimeout(() => { buf += '\n[companion] hard timeout, killing agy\n'; killTree(ch.pid); }, (j.timeoutMin + 2) * 60_000);
       const onEvent = (ev) => {
         lastEvent = Date.now();
-        if (ev.event === 'init' && ev.conversation_id) turnCid = ev.conversation_id;
+        if (ev.event === 'init' && ev.conversation_id) { turnCid = ev.conversation_id; if (!cid) updateJob(id, { turnConversationId: turnCid }); }
         const su = ev.step_update;
+        if (su?.step_type === 'tool' && su.state === 'DONE') turnSteps++;
         if (su?.step_type === 'tool') {
           const p = su.tool_info?.parameters || {};
           const detail = String(p.CommandLine || p.command || p.AbsolutePath || p.TargetFile || p.Query || '').slice(0, 160);
@@ -398,10 +415,18 @@ async function worker(id) {
     }
     saveCid(r?.conversation_id || turnCid); // the turn may have done real work — never lose its conversation
     if (looksFinal(r?.response)) return done({ warning: 'agy reported an error after its final answer (' + err.kind + '): ' + (r?.error || '').slice(0, 300) });
-    if (err.retryable && cid && retries < RETRY_DELAYS_S.length) {
-      await sleep(RETRY_DELAYS_S[retries++] * 1000);
+    if (turnSteps > 0) retries = 0; // the turn moved the work forward — the retry budget counts consecutive empty failures only
+    if (err.kind === 'capacity') {
+      // Server has no capacity for this model right now: continue on the next model of the chain if there is one.
+      const p = pickModel(j.role, getQuota(), { exclude: tried, forced: j.forcedModel });
+      if (p.model) { model = p.model; tried.push(model); }
+    }
+    if (err.retryable && retries < RETRY_DELAYS_S.length) {
+      const delay = RETRY_DELAYS_S[retries++];
+      updateJob(id, { progress: { at: new Date().toISOString(), step: 'retrying after ' + err.kind + ' in ' + delay + 's (' + retries + '/' + RETRY_DELAYS_S.length + ')' } });
+      await sleep(delay * 1000);
       if (loadJob(id).status === 'cancelled') return;
-      pendingText = err.kind === 'stalled' ? STALL_MSG(stalledTool) : CONTINUE_MSG;
+      pendingText = cid ? (err.kind === 'stalled' ? STALL_MSG(stalledTool) : CONTINUE_MSG) : null;
       continue;
     }
     updateJob(id, { status: 'failed', errorKind: err.kind, retryable: err.retryable, retries,
@@ -489,7 +514,9 @@ async function main() {
     case 'pick': return cmdPick(o);
     case 'sessions': return cmdSessions(o);
     case 'forget': updateSession(o._[0], null); return out('forgot ' + o._[0]);
-    case '_worker': return worker(o._[0]).catch((e) => updateJob(o._[0], { status: 'failed', error: 'worker crash: ' + e.stack, endedAt: new Date().toISOString() }));
+    case '_worker':
+      process.on('uncaughtException', (e) => { try { fs.appendFileSync(path.join(JOBS, o._[0] + '.log'), '\n[companion] worker exception (ignored): ' + (e?.stack || e) + '\n'); } catch {} });
+      return worker(o._[0]).catch((e) => updateJob(o._[0], { status: 'failed', error: 'worker crash: ' + e.stack, endedAt: new Date().toISOString() }));
     default: out(HELP); if (cmd && cmd !== 'help') process.exitCode = 64;
   }
 }
