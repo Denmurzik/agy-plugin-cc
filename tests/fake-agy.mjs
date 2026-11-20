@@ -20,13 +20,30 @@ if (p === '/usage') {
   process.exit(0);
 }
 const model = get('--model');
+const STREAM = get('--output-format') === 'stream-json';
+if (STREAM) {
+  const origLog = console.log;
+  console.log = (s) => {
+    if (typeof s === 'string' && s.startsWith('{')) {
+      const o = JSON.parse(s);
+      if (!o.event) return origLog(JSON.stringify({ event: 'result', result: o }));
+    }
+    origLog(s);
+  };
+}
 let beh = sc.models?.[model] || 'ok';
 if (Array.isArray(beh)) {
   const n = fs.readFileSync(process.env.AGY_STUB_CALLS, 'utf8').trim().split('\n').filter((l) => JSON.parse(l).args.includes(model)).length - 1;
   beh = beh[Math.min(n, beh.length - 1)];
 }
 const cid = get('--conversation') || 'conv-' + Math.random().toString(16).slice(2, 8);
+if (STREAM) console.log(JSON.stringify({ event: 'init', conversation_id: cid }));
 if (beh === 'sleep') { setTimeout(() => {}, 600000); }
+else if (beh === 'hang') { setTimeout(() => {}, 600000); }
+else if (beh === 'hang-tool') {
+  console.log(JSON.stringify({ event: 'step_update', step_update: { conversation_id: cid, step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'npm run test:int' } } } }));
+  setTimeout(() => {}, 600000);
+}
 else if (beh === 'quota') {
   console.log('AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): quota exceeded","status":"RESOURCE_EXHAUSTED","error_code":429}');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'Resource has been exhausted (e.g. check quota).' }));

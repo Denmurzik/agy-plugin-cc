@@ -78,7 +78,11 @@ export function parseResult(text) {
   const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].startsWith('{')) continue;
-    try { const o = JSON.parse(lines[i]); if (o && 'status' in o) return o; } catch {}
+    try {
+      const o = JSON.parse(lines[i]);
+      if (o && o.event === 'result' && o.result) return o.result;
+      if (o && 'status' in o && !o.event) return o;
+    } catch {}
   }
   return null;
 }
@@ -199,7 +203,9 @@ function render(j, { json } = {}) {
       + (j.conversationId && j.name ? '\nTo continue the same conversation: ask ' + j.name + ' "continue"' : '');
   }
   if (j.status === 'cancelled') return head + '\n' + (j.error || '');
-  return head + '\nstill running (' + Math.round((Date.now() - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's). Next: node "' + SELF + '" wait ' + j.id;
+  const pr = j.progress;
+  const prog = pr ? ' — now: ' + pr.step + ' (last agy activity ' + Math.round((Date.now() - Date.parse(pr.at)) / 1000) + 's ago)' : '';
+  return head + '\nstill running (' + Math.round((Date.now() - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's)' + prog + '. Next: node "' + SELF + '" wait ' + j.id;
 }
 async function waitJob(id, sec) {
   const t0 = Date.now();
@@ -249,6 +255,7 @@ async function cmdRun(o, { ask = false } = {}) {
 
 export function classifyError(r, buf) {
   const text = (r?.error || '') + '\n' + String(buf || '').slice(-4000);
+  if (/\[companion\] stalled/.test(text)) return { kind: 'stalled', retryable: true };
   if (isQuotaError(text) && !/network issue|EOF|Malformed function call/i.test(r?.error || '')) return { kind: 'quota', retryable: false };
   let agyErr = null;
   const m = String(buf || '').match(/AGY_ERROR: (\{.*\})/g);
@@ -277,6 +284,9 @@ function workspaceChanges(cwd, before) {
   const commits = before.head === after.head ? [] : spawnSync('git', ['-C', cwd, 'log', '--oneline', '--no-decorate', before.head + '..' + after.head], { encoding: 'utf8', windowsHide: true }).stdout.split('\n').filter(Boolean);
   return { commits, dirtyFiles: after.dirty, changed: commits.length > 0 || after.dirty !== before.dirty };
 }
+const IDLE_SEC = Number(process.env.AGY_IDLE_SEC || (CONFIG.idleMin ?? 20) * 60);
+const TOOL_IDLE_SEC = Number(process.env.AGY_TOOL_IDLE_SEC || (CONFIG.toolIdleMin ?? 60) * 60);
+const STALL_MSG = (t) => 'Your previous turn was stopped by the orchestrator because it made no progress for a long time' + (t ? ' while this command was running: ' + t.name + ' ' + t.detail : '') + '. Do NOT rerun that command as-is. First check why it hung (a service it needs may be down — e.g. Docker/DB not running; an interactive prompt; a watcher). Give long commands an explicit timeout. If a required service is unavailable, stop and report STATUS: BLOCKED with the reason. Otherwise continue the task from where you stopped without redoing finished steps.';
 const RETRY_DELAYS_S = (process.env.AGY_RETRY_DELAYS || '15,45,90').split(',').map(Number);
 const CONTINUE_MSG = 'Your previous turn was cut off by a connection / tool-call error on the agy side (not by you). Continue the task from exactly where you stopped — check the workspace state first, do not redo steps that are already done. If the task is already complete, just give your final answer in the required format.';
 
@@ -307,7 +317,9 @@ async function worker(id) {
       fs.writeFileSync(pf, text);
       text = 'Your full task is in the file ' + pf + ' — read it completely first, then do exactly what it says.';
     }
-    const args = ['--model', model, '--output-format', 'json', '--dangerously-skip-permissions', '--print-timeout', j.timeoutMin + 'm', '--log-file', path.join(JOBS, id + '.agy.log')];
+    let stalledTool = null;
+    let turnCid = null; // conversation of this turn, known from the stream's init event
+    const args = ['--model', model, '--output-format', 'stream-json', '--dangerously-skip-permissions', '--print-timeout', j.timeoutMin + 'm', '--log-file', path.join(JOBS, id + '.agy.log')];
     if (MODES[j.role]) args.push('--mode', MODES[j.role]);
     if (cid) args.push('--conversation', cid);
     args.push('-p', text);
@@ -316,13 +328,53 @@ async function worker(id) {
     const [cmd, a] = agyCmd(args);
     const res = await new Promise((resolve) => {
       let buf = '';
+      let pending = '';
+      let lastEvent = Date.now();
+      let activeTool = null; // { name, detail, since } while a tool step is ACTIVE
+      let lastProgressWrite = 0;
+      let lastStep = null;
       const ch = spawn(cmd, a, { cwd: j.cwd, windowsHide: true, env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
-      updateJob(id, { agyPid: ch.pid });
+      updateJob(id, { agyPid: ch.pid, progress: { at: new Date().toISOString(), step: 'starting' } });
       const hard = setTimeout(() => { buf += '\n[companion] hard timeout, killing agy\n'; killTree(ch.pid); }, (j.timeoutMin + 2) * 60_000);
-      ch.stdout.on('data', (d) => { buf += d; fs.appendFileSync(logF, d); });
+      const onEvent = (ev) => {
+        lastEvent = Date.now();
+        if (ev.event === 'init' && ev.conversation_id) turnCid = ev.conversation_id;
+        const su = ev.step_update;
+        if (su?.step_type === 'tool') {
+          const p = su.tool_info?.parameters || {};
+          const detail = String(p.CommandLine || p.command || p.AbsolutePath || p.TargetFile || p.Query || '').slice(0, 160);
+          activeTool = su.state === 'ACTIVE' ? { name: su.tool_name, detail, since: activeTool?.since || Date.now() } : null;
+        } else if (su) activeTool = null;
+        const step = activeTool ? activeTool.name + (activeTool.detail ? ': ' + activeTool.detail : '') : (su?.step_type || ev.event || 'event');
+        if (step !== lastStep || Date.now() - lastProgressWrite > 5000) {
+          lastProgressWrite = Date.now(); lastStep = step;
+          updateJob(id, { progress: { at: new Date().toISOString(), step, steps: su?.step_index ?? null } });
+        }
+      };
+      const onData = (d) => {
+        buf += d; fs.appendFileSync(logF, d);
+        pending += d;
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop();
+        for (const l of lines) { if (l.startsWith('{')) { try { onEvent(JSON.parse(l)); } catch {} } }
+      };
+      // Stall watchdog: agy sometimes hangs forever after an internal stream EOF.
+      const idle = setInterval(() => {
+        const quiet = (Date.now() - lastEvent) / 1000;
+        const limit = activeTool ? TOOL_IDLE_SEC : IDLE_SEC;
+        if (quiet > limit) {
+          buf += '\n[companion] stalled: no agy progress for ' + Math.round(quiet) + 's' + (activeTool ? ' while running ' + activeTool.name + ' ' + activeTool.detail : '') + ', killing agy\n';
+          fs.appendFileSync(logF, '\n[companion] stalled (' + Math.round(quiet) + 's quiet' + (activeTool ? ', tool ' + activeTool.name + ' ' + activeTool.detail : '') + ')\n');
+          stalledTool = activeTool;
+          clearInterval(idle);
+          killTree(ch.pid);
+        }
+      }, Math.min(15_000, IDLE_SEC * 250));
+      const fin = (r) => { clearTimeout(hard); clearInterval(idle); resolve(r); };
+      ch.stdout.on('data', onData);
       ch.stderr.on('data', (d) => { buf += d; fs.appendFileSync(logF, d); });
-      ch.on('error', (e) => { clearTimeout(hard); resolve({ code: -1, buf: buf + '\n' + e.message }); });
-      ch.on('close', (code) => { clearTimeout(hard); resolve({ code, buf }); });
+      ch.on('error', (e) => fin({ code: -1, buf: buf + '\n' + e.message }));
+      ch.on('close', (code) => fin({ code, buf }));
     });
     if (loadJob(id).status === 'cancelled') return;
     const r = parseResult(res.buf);
@@ -344,12 +396,12 @@ async function worker(id) {
       switchModel = true;
       continue;
     }
-    saveCid(r?.conversation_id); // the turn may have done real work — never lose its conversation
+    saveCid(r?.conversation_id || turnCid); // the turn may have done real work — never lose its conversation
     if (looksFinal(r?.response)) return done({ warning: 'agy reported an error after its final answer (' + err.kind + '): ' + (r?.error || '').slice(0, 300) });
     if (err.retryable && cid && retries < RETRY_DELAYS_S.length) {
       await sleep(RETRY_DELAYS_S[retries++] * 1000);
       if (loadJob(id).status === 'cancelled') return;
-      pendingText = CONTINUE_MSG;
+      pendingText = err.kind === 'stalled' ? STALL_MSG(stalledTool) : CONTINUE_MSG;
       continue;
     }
     updateJob(id, { status: 'failed', errorKind: err.kind, retryable: err.retryable, retries,
@@ -391,7 +443,7 @@ function cmdStatus(o) {
   const rows = ['| job | name | role | model | status | error | time |', '|---|---|---|---|---|---|---|'];
   for (const j of jobs) {
     const end = j.endedAt ? Date.parse(j.endedAt) : Date.now();
-    rows.push('| ' + j.id + ' | ' + (j.name || '') + ' | ' + j.role + ' | ' + (j.model || '-') + ' | ' + j.status + (j.warning ? ' (warning)' : '') + ' | ' + (j.status === 'failed' ? (j.errorKind || 'error') + (j.retryable ? ' (retryable)' : '') + (j.changes?.changed ? ', workspace changed' : '') : (j.attempts || []).filter((a) => a.error).map((a) => a.error).join(',')) + ' | ' + Math.round((end - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's |');
+    rows.push('| ' + j.id + ' | ' + (j.name || '') + ' | ' + j.role + ' | ' + (j.model || '-') + ' | ' + j.status + (j.warning ? ' (warning)' : '') + ' | ' + (j.status === 'failed' ? (j.errorKind || 'error') + (j.retryable ? ' (retryable)' : '') + (j.changes?.changed ? ', workspace changed' : '') : ((j.attempts || []).filter((a) => a.error).map((a) => a.error).join(',') + (!TERMINAL.has(j.status) && j.progress ? ' now: ' + String(j.progress.step).slice(0, 60) : ''))) + ' | ' + Math.round((end - Date.parse(j.startedAt || j.createdAt)) / 1000) + 's |');
   }
   out(jobs.length ? rows.join('\n') : 'no agy jobs');
 }

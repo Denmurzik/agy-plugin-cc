@@ -179,3 +179,33 @@ test('per-turn print timeout continues the same conversation; default timeout is
   assert.ok(convOf(c[1]));
   assert.equal(c[0].args[c[0].args.indexOf('--print-timeout') + 1], '120m');
 });
+
+test('silent hang is detected, agy killed and the same conversation continued', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['hang', 'ok'] } });
+  e.env.AGY_IDLE_SEC = '3'; e.env.AGY_TOOL_IDLE_SEC = '600';
+  const r = run(e, 'run', '--role', 'code', '--name', 'h1', 'x');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  const c = calls(e);
+  assert.equal(c.length, 2);
+  assert.ok(convOf(c[1]), 'conversation from the init event must be resumed');
+  assert.match(c[1].args.at(-1), /made no progress/);
+});
+
+test('a hung tool gets the longer tool limit and the stall message names the command', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': ['hang-tool', 'ok'] } });
+  e.env.AGY_IDLE_SEC = '1'; e.env.AGY_TOOL_IDLE_SEC = '4';
+  const t0 = Date.now();
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /status=DONE/, r.stdout);
+  assert.ok(Date.now() - t0 >= 4000, 'must wait for the tool limit, not the idle limit');
+  assert.match(calls(e)[1].args.at(-1), /run_command npm run test:int/);
+});
+
+test('running job shows live progress in wait/status', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'hang-tool' } });
+  const r = run(e, 'run', '--role', 'code', '--background', 'x');
+  const id = r.stdout.match(/job=(\S+)/)[1];
+  const w = run(e, 'wait', id, '--wait-sec', '3');
+  assert.match(w.stdout, /now: run_command: npm run test:int/);
+  run(e, 'cancel', id);
+});
