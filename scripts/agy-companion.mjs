@@ -395,10 +395,16 @@ async function worker(id) {
           const detail = String(p.CommandLine || p.command || p.AbsolutePath || p.TargetFile || p.Query || '').slice(0, 160);
           activeTool = su.state === 'ACTIVE' ? { name: su.tool_name, detail, since: activeTool?.since || Date.now() } : null;
         } else if (su) activeTool = null;
-        const step = activeTool ? activeTool.name + (activeTool.detail ? ': ' + activeTool.detail : '') : (su?.step_type || ev.event || 'event');
+        // mode mirrors Claude Code's spinner: tool-use while a tool runs, responding while the answer streams,
+        // requesting after an agy error, thinking otherwise (the model is working on its next step)
+        let mode = 'thinking';
+        let step = 'thinking';
+        if (activeTool) { mode = 'tool-use'; step = activeTool.name + (activeTool.detail ? ': ' + activeTool.detail : ''); }
+        else if (su?.step_type === 'agent_response' && su.state === 'ACTIVE') { mode = 'responding'; step = 'writing the answer'; }
+        else if (su?.step_type === 'error_message') { mode = 'requesting'; step = 'retrying after an agy error'; }
         if (step !== lastStep || Date.now() - lastProgressWrite > 5000) {
           lastProgressWrite = Date.now(); lastStep = step;
-          updateJob(id, { progress: { at: new Date().toISOString(), step, steps: su?.step_index ?? null } });
+          updateJob(id, { progress: { at: new Date().toISOString(), step, mode, tool: activeTool?.name ?? null, detail: activeTool?.detail ?? '', steps: su?.step_index ?? null } });
         }
       };
       const onData = (d) => {
@@ -458,7 +464,7 @@ async function worker(id) {
     }
     if (err.retryable && retries < RETRY_DELAYS_S.length) {
       const delay = RETRY_DELAYS_S[retries++];
-      updateJob(id, { progress: { at: new Date().toISOString(), step: 'retrying after ' + err.kind + ' in ' + delay + 's (' + retries + '/' + RETRY_DELAYS_S.length + ')' } });
+      updateJob(id, { progress: { at: new Date().toISOString(), mode: 'requesting', step: 'retrying after ' + err.kind + ' in ' + delay + 's (' + retries + '/' + RETRY_DELAYS_S.length + ')' } });
       await sleep(delay * 1000);
       if (loadJob(id).status === 'cancelled') return;
       pendingText = cid ? (err.kind === 'stalled' ? STALL_MSG(stalledTool) : CONTINUE_MSG) : null;
