@@ -23,10 +23,11 @@ export const CHAINS = {
   ...(CONFIG.chains || {}),
 };
 const MODES = { code: null, review: 'plan', recon: 'plan' };
+const SHELL_RULES = ' Shell rules: commands must never wait for input — always give rg/grep/find/cat an explicit path (e.g. `rg -n pattern .`), never read stdin, never start servers/watchers/pagers/interactive prompts; prefer your built-in search/read tools over shell for searching.';
 const PREAMBLE = {
-  code: 'You are a coding agent delegated a task by an orchestrating Claude Code agent. Work autonomously; do not ask for approval. Your final message is returned verbatim to the orchestrator: keep it short (status, what changed, how verified, concerns).',
-  recon: 'You are a read-only investigator delegated a fact-finding task by an orchestrating Claude Code agent: search the code, read files and logs, collect facts. Do NOT modify, create or delete any files and do not write plans. Answer only what was asked, as a compact `file:line` table or at most 10 lines; no file dumps, no recommendations unless asked.',
-  review: 'You are a read-only analyst/reviewer delegated a task by an orchestrating Claude Code agent. Do NOT modify, create or delete any files and do not write plans for changes; answer directly. Your final message is returned verbatim to the orchestrator: lead with findings, cite file:line, keep it concise.',
+  code: 'You are a coding agent delegated a task by an orchestrating Claude Code agent. Work autonomously; do not ask for approval. Your final message is returned verbatim to the orchestrator: keep it short (status, what changed, how verified, concerns).' + SHELL_RULES,
+  recon: 'You are a read-only investigator delegated a fact-finding task by an orchestrating Claude Code agent: search the code, read files and logs, collect facts. Do NOT modify, create or delete any files and do not write plans. Answer only what was asked, as a compact `file:line` table or at most 10 lines; no file dumps, no recommendations unless asked.' + SHELL_RULES,
+  review: 'You are a read-only analyst/reviewer delegated a task by an orchestrating Claude Code agent. Do NOT modify, create or delete any files and do not write plans for changes; answer directly. Your final message is returned verbatim to the orchestrator: lead with findings, cite file:line, keep it concise.' + SHELL_RULES,
 };
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'quota_exhausted']);
 
@@ -303,6 +304,8 @@ function workspaceChanges(cwd, before) {
 }
 const IDLE_SEC = Number(process.env.AGY_IDLE_SEC || (CONFIG.idleMin ?? 20) * 60);
 const TOOL_IDLE_SEC = Number(process.env.AGY_TOOL_IDLE_SEC || (CONFIG.toolIdleMin ?? 60) * 60);
+// Read-only roles never run long builds: a command quiet for this long is hung (e.g. waiting on stdin).
+const ROLE_TOOL_IDLE_SEC = { recon: Number(process.env.AGY_RECON_TOOL_IDLE_SEC || (CONFIG.reconToolIdleMin ?? 3) * 60), review: Number(process.env.AGY_REVIEW_TOOL_IDLE_SEC || (CONFIG.reviewToolIdleMin ?? 15) * 60) };
 const STALL_MSG = (t) => 'Your previous turn was stopped by the orchestrator because it made no progress for a long time' + (t ? ' while this command was running: ' + t.name + ' ' + t.detail : '') + '. Do NOT rerun that command as-is. First check why it hung (a service it needs may be down — e.g. Docker/DB not running; an interactive prompt; a watcher). Give long commands an explicit timeout. If a required service is unavailable, stop and report STATUS: BLOCKED with the reason. Otherwise continue the task from where you stopped without redoing finished steps.';
 const RETRY_DELAYS_S = (process.env.AGY_RETRY_DELAYS || (CONFIG.retryDelays || [15, 30, 60, 120, 240, 300]).join(',')).split(',').map(Number);
 const CONTINUE_MSG = 'Your previous turn was cut off by a connection / tool-call error on the agy side (not by you). Continue the task from exactly where you stopped — check the workspace state first, do not redo steps that are already done. If the task is already complete, just give your final answer in the required format.';
@@ -351,7 +354,7 @@ async function worker(id) {
       let activeTool = null; // { name, detail, since } while a tool step is ACTIVE
       let lastProgressWrite = 0;
       let lastStep = null;
-      const ch = spawn(cmd, a, { cwd: j.cwd, windowsHide: true, env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
+      const ch = spawn(cmd, a, { cwd: j.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
       updateJob(id, { agyPid: ch.pid, progress: { at: new Date().toISOString(), step: 'starting' } });
       const hard = setTimeout(() => { buf += '\n[companion] hard timeout, killing agy\n'; killTree(ch.pid); }, (j.timeoutMin + 2) * 60_000);
       const onEvent = (ev) => {
@@ -380,7 +383,7 @@ async function worker(id) {
       // Stall watchdog: agy sometimes hangs forever after an internal stream EOF.
       const idle = setInterval(() => {
         const quiet = (Date.now() - lastEvent) / 1000;
-        const limit = activeTool ? TOOL_IDLE_SEC : IDLE_SEC;
+        const limit = activeTool ? Math.min(TOOL_IDLE_SEC, ROLE_TOOL_IDLE_SEC[j.role] ?? TOOL_IDLE_SEC) : IDLE_SEC;
         if (quiet > limit) {
           buf += '\n[companion] stalled: no agy progress for ' + Math.round(quiet) + 's' + (activeTool ? ' while running ' + activeTool.name + ' ' + activeTool.detail : '') + ', killing agy\n';
           fs.appendFileSync(logF, '\n[companion] stalled (' + Math.round(quiet) + 's quiet' + (activeTool ? ', tool ' + activeTool.name + ' ' + activeTool.detail : '') + ')\n');
