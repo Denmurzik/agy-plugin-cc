@@ -7,6 +7,12 @@ const sc = JSON.parse(fs.readFileSync(process.env.AGY_STUB_SCENARIO, 'utf8'));
 fs.appendFileSync(process.env.AGY_STUB_CALLS, JSON.stringify({ args, cwd: process.cwd() }) + '\n');
 const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
 const p = get('-p');
+if (args[0] === 'models') {
+  if (!sc.models_list) process.exit(1);
+  console.log('Fetching available models...');
+  for (const id of sc.models_list) console.log(id + '\t' + id);
+  process.exit(0);
+}
 const reset = new Date(Date.now() + 3600_000).toISOString();
 if (p === '/usage') {
   const u = sc.usage || {};
@@ -53,6 +59,9 @@ else if (beh === 'quota') {
   console.log('AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): quota exceeded","status":"RESOURCE_EXHAUSTED","error_code":429}');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'Resource has been exhausted (e.g. check quota).' }));
   process.exit(1);
+} else if (beh === 'invalid-model') {
+  console.log('error: invalid model selection (--model "' + model + '" --effort ""): model ' + model + ' is not recognized');
+  process.exit(2);
 } else if (beh === 'capacity') {
   console.log('AGY_ERROR: {"short_error":"UNAVAILABLE (code 503): No capacity available for model ' + model + ' on the server","status":"UNAVAILABLE","error_code":503,"retryable":true}');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'No capacity available for model ' + model + ' on the server' }));

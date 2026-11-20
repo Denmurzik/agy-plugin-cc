@@ -82,7 +82,7 @@ test('harness notifications are not forwarded to agy', async () => {
   await until(() => inbox(e, 'team-lead').some((x) => x.from === 'agy-impl-3'));
   post(e, 'agy-impl-3', 'team-lead', JSON.stringify({ type: 'idle_notification', from: 'x' }));
   await new Promise((r) => setTimeout(r, 1500));
-  const calls = fs.readFileSync(path.join(e.dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => !c.args.includes('/usage'));
+  const calls = fs.readFileSync(path.join(e.dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => !c.args.includes('/usage') && c.args[0] !== 'models');
   assert.equal(calls.length, 1);
   cleanup(e, 'agy-impl-3');
 });

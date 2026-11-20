@@ -18,7 +18,7 @@ function env(scenario) {
     env: { ...process.env, AGY_STATE_DIR: path.join(dir, 'state'), AGY_BIN: FAKE, AGY_STUB_SCENARIO: sc, AGY_STUB_CALLS: path.join(dir, 'calls.jsonl'), AGY_USAGE_TTL_MS: '0', AGY_RETRY_DELAYS: '0,0,0' } };
 }
 const run = (e, ...args) => spawnSync(process.execPath, [COMP, ...args], { env: e.env, encoding: 'utf8', cwd: e.dir, timeout: 60000 });
-const calls = (e) => fs.existsSync(e.calls) ? fs.readFileSync(e.calls, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => !c.args.includes('/usage')) : [];
+const calls = (e) => fs.existsSync(e.calls) ? fs.readFileSync(e.calls, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => !c.args.includes('/usage') && c.args[0] !== 'models') : [];
 
 const lib = await import(pathToFileURL(COMP).href);
 
@@ -291,4 +291,23 @@ test('stopping the streaming agent cancels its agy job', async () => {
   for (let i = 0; i < 60; i++) { await new Promise((r) => setTimeout(r, 250)); j = JSON.parse(fs.readFileSync(jf, 'utf8')); if (j.status === 'cancelled') break; }
   assert.equal(j.status, 'cancelled');
   assert.match(j.error, /agent running this job was stopped/);
+});
+
+test('models agy no longer offers are skipped; a role with none left falls back to what exists', () => {
+  const e = env({ models_list: ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'] });
+  assert.equal(run(e, 'pick', 'code').stdout.trim(), 'claude-sonnet-4-6');
+  assert.equal(run(e, 'pick', 'recon').stdout.trim(), 'gemini-3.8-flash-medium');
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /model=claude-sonnet-4-6 status=DONE/, r.stdout);
+  const e2 = env({ models_list: ['gemini-4-neon-medium', 'claude-sonnet-5-5-medium'] });
+  assert.equal(run(e2, 'pick', 'code').stdout.trim(), 'gemini-4-neon-medium');
+});
+
+test('invalid model selection moves to the next model at once', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'invalid-model' } });
+  e.env.AGY_RETRY_DELAYS = '30';
+  const t0 = Date.now();
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /model=claude-sonnet-5-5-medium status=DONE/, r.stdout);
+  assert.ok(Date.now() - t0 < 25000, 'no backoff for a missing model');
 });

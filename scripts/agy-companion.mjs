@@ -157,8 +157,52 @@ export function groupStatus(q, group) {
   const until = low.map((b) => b.reset).sort().pop();
   return { ok: false, until, why: low.map((b) => b.window + ' ' + Math.round(b.remaining * 100) + '%').join(', ') };
 }
-export function pickModel(role, q, { exclude = [], forced = null } = {}) {
-  const chain = forced ? [forced] : CHAINS[role];
+// ---------- available models ----------
+const MODELS_F = path.join(STATE, 'models.json');
+const MODELS_TTL_MS = Number(process.env.AGY_MODELS_TTL_MS ?? 10 * 60_000);
+export function parseModels(text) {
+  return String(text).split(/\r?\n/).map((l) => l.trim().split(/\s+/)[0]).filter((id) => /^[a-z][\w.-]*-[\w.-]+$/.test(id || '') && !/^fetching/i.test(id));
+}
+// The models agy offers this account right now ({ids:Set, missing:{id:until}}), or null when unknown.
+export function getModels({ refresh = false } = {}) {
+  return withLock('models', () => {
+    const m = readJson(MODELS_F, { fetchedAt: 0, ids: [], missing: {} });
+    m.missing ||= {};
+    if (refresh || Date.now() - (m.fetchedAt || 0) > MODELS_TTL_MS) {
+      const r = runAgySync(['models'], { timeout: 60_000 });
+      const ids = parseModels(r.out);
+      if (r.code === 0 && ids.length) { m.ids = ids; m.fetchedAt = Date.now(); }
+    }
+    for (const [id, until] of Object.entries(m.missing)) if (Date.parse(until) <= Date.now()) delete m.missing[id];
+    writeJson(MODELS_F, m);
+    return m.ids.length ? { ids: new Set(m.ids.filter((id) => !m.missing[id])), missing: m.missing } : null;
+  });
+}
+function markModelMissing(id) {
+  withLock('models', () => {
+    const m = readJson(MODELS_F, { fetchedAt: 0, ids: [], missing: {} });
+    m.missing = { ...(m.missing || {}), [id]: new Date(Date.now() + MODELS_TTL_MS).toISOString() };
+    writeJson(MODELS_F, m);
+  });
+}
+// Used only when no model of a role's chain exists any more (agy changed its model list, or another account).
+const FALLBACK = {
+  code: [/^claude-sonnet/, /^gemini-[\d.]+-flash-high$/, /^gemini-[\d.]+-flash-medium$/, /^claude-opus/],
+  review: [/^claude-sonnet/, /^gemini-[\d.]+-flash-high$/, /^claude-opus/],
+  recon: [/^gemini-[\d.]+-flash-medium$/, /^gemini-[\d.]+-flash/, /^claude-sonnet/],
+};
+export function pickModel(role, q, { exclude = [], forced = null, available = null } = {}) {
+  if (!forced && !CHAINS[role]) throw new Error('unknown role ' + role);
+  let chain = forced ? [forced] : CHAINS[role];
+  if (available && !forced) {
+    const live = chain.filter((m) => available.has(m));
+    if (live.length) chain = live;
+    else {
+      const ids = [...available];
+      chain = (FALLBACK[role] || []).map((re) => ids.find((id) => re.test(id))).filter(Boolean);
+      chain = [...new Set(chain)];
+    }
+  }
   if (!chain) throw new Error('unknown role ' + role);
   const resets = [];
   for (const m of chain) {
@@ -247,7 +291,7 @@ export function startJob({ name = null, role, cwd, prompt, forcedModel = null, t
   const sess = name ? loadSessions()[name] : null;
   if (!CHAINS[role]) throw new Error('--role must be code, review or recon');
   if (!String(prompt || '').trim()) throw new Error('empty prompt');
-  const p = pickModel(role, getQuota(), { forced: forcedModel });
+  const p = pickModel(role, getQuota(), { forced: forcedModel, available: getModels()?.ids });
   const id = newJobId();
   const base = { id, name, role, cwd, team, forcedModel, timeoutMin: Number(timeoutMin || process.env.AGY_TIMEOUT_MIN || CONFIG.timeoutMin || 120),
     conversationId: sess?.conversationId || null, createdAt: new Date().toISOString(), tried: [], attempts: [] };
@@ -303,6 +347,7 @@ async function cmdRun(o, { ask = false } = {}) {
 export function classifyError(r, buf) {
   const text = (r?.error || '') + '\n' + String(buf || '').slice(-4000);
   if (/\[companion\] stalled/.test(text)) return { kind: 'stalled', retryable: true };
+  if (/invalid model selection|is not recognized|NOT_FOUND \(code 404\)|Requested entity was not found/i.test(text)) return { kind: 'model_unavailable', retryable: true };
   if (isQuotaError(text) && !/network issue|EOF|Malformed function call/i.test(r?.error || '')) return { kind: 'quota', retryable: false };
   let agyErr = null;
   const m = String(buf || '').match(/AGY_ERROR: (\{.*\})/g);
@@ -358,7 +403,7 @@ async function worker(id) {
   for (;;) {
     if (switchModel) {
       switchModel = false;
-      const p = pickModel(j.role, getQuota(), { exclude: tried, forced: j.forcedModel });
+      const p = pickModel(j.role, getQuota(), { exclude: tried, forced: j.forcedModel, available: getModels()?.ids });
       if (!p.model) { updateJob(id, { status: 'quota_exhausted', resetAt: p.resetAt, endedAt: new Date().toISOString() }); return; }
       model = p.model;
       tried.push(model);
@@ -494,13 +539,14 @@ async function worker(id) {
     saveCid(r?.conversation_id || turnCid); // the turn may have done real work — never lose its conversation
     if (looksFinal(r?.response)) return done({ warning: 'agy reported an error after its final answer (' + err.kind + '): ' + (r?.error || '').slice(0, 300) });
     if (turnSteps > 0) retries = 0; // the turn moved the work forward — the retry budget counts consecutive empty failures only
-    if (err.kind === 'capacity') {
+    if (err.kind === 'model_unavailable') { markModelMissing(model); getModels({ refresh: true }); }
+    if (err.kind === 'capacity' || err.kind === 'model_unavailable') {
       // Server has no capacity for this model right now: continue on the next model of the chain if there is one.
-      const p = pickModel(j.role, getQuota(), { exclude: tried, forced: j.forcedModel });
+      const p = pickModel(j.role, getQuota(), { exclude: tried, forced: j.forcedModel, available: getModels()?.ids });
       if (p.model) { model = p.model; tried.push(model); }
     }
     if (err.retryable && retries < RETRY_DELAYS_S.length) {
-      const delay = RETRY_DELAYS_S[retries++];
+      const delay = err.kind === 'model_unavailable' ? (retries++, 0) : RETRY_DELAYS_S[retries++];
       updateJob(id, { progress: { at: new Date().toISOString(), mode: 'requesting', step: 'retrying after ' + err.kind + ' in ' + delay + 's (' + retries + '/' + RETRY_DELAYS_S.length + ')' } });
       await sleep(delay * 1000);
       if (loadJob(id).status === 'cancelled') return;
@@ -521,8 +567,10 @@ function cmdUsage(o) {
   for (const [k, g] of Object.entries(q.groups || {}))
     for (const b of g.buckets) rows.push('| ' + g.name + ' | ' + b.window + ' | ' + (b.remaining * 100).toFixed(1) + '% | ' + fmtTime(b.reset) + ' |');
   out(rows.join('\n'));
+  const av = getModels({ refresh: true });
+  if (av) out('- agy models now: ' + [...av.ids].join(', '));
   for (const role of Object.keys(CHAINS)) {
-    const p = pickModel(role, q);
+    const p = pickModel(role, q, { available: av?.ids });
     out('- ' + role + ': ' + (p.model ? p.model : 'QUOTA_EXHAUSTED до ' + fmtTime(p.resetAt)));
   }
   for (const [g, u] of Object.entries(q.blocked || {})) out('- blocked ' + g + ' до ' + fmtTime(u));
@@ -530,7 +578,7 @@ function cmdUsage(o) {
 }
 function cmdPick(o) {
   const role = o._[0] || o.role;
-  const p = pickModel(role, getQuota({ refresh: !!o.refresh }));
+  const p = pickModel(role, getQuota({ refresh: !!o.refresh }), { available: getModels({ refresh: !!o.refresh })?.ids });
   out(o.json ? JSON.stringify(p) : (p.model || 'QUOTA_EXHAUSTED ' + (p.resetAt || '')));
   if (!p.model) process.exitCode = 4;
 }
@@ -612,7 +660,7 @@ async function cmdTeam(o) {
     const teamName = team.resolveTeam(o.team);
     const prompt = o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
     if (!prompt.trim()) throw new Error('empty task: pass --prompt-file or text');
-    const p = pickModel(role, getQuota(), { forced: o.model || null });
+    const p = pickModel(role, getQuota(), { forced: o.model || null, available: getModels()?.ids });
     if (!p.model) { out('QUOTA_EXHAUSTED: no agy model for role "' + role + '" until ' + (p.resetAt || '?') + ' (' + fmtTime(p.resetAt) + ') — use a Claude teammate instead.'); process.exitCode = 4; return; }
     const cwd = path.resolve(o.cwd || process.cwd());
     const old = loadSessions()[name];
