@@ -19,11 +19,13 @@ const MAX_ARG_PROMPT = 20_000;
 export const CHAINS = {
   code: ['gemini-4-neon-medium', 'claude-sonnet-5-5-medium', 'gemini-4-argon-medium'],
   review: ['gemini-4-argon-medium'],
+  recon: ['gemini-4-hydrogen-medium', 'claude-sonnet-5-5-low'],
   ...(CONFIG.chains || {}),
 };
-const MODES = { code: null, review: 'plan' };
+const MODES = { code: null, review: 'plan', recon: 'plan' };
 const PREAMBLE = {
   code: 'You are a coding agent delegated a task by an orchestrating Claude Code agent. Work autonomously; do not ask for approval. Your final message is returned verbatim to the orchestrator: keep it short (status, what changed, how verified, concerns).',
+  recon: 'You are a read-only investigator delegated a fact-finding task by an orchestrating Claude Code agent: search the code, read files and logs, collect facts. Do NOT modify, create or delete any files and do not write plans. Answer only what was asked, as a compact `file:line` table or at most 10 lines; no file dumps, no recommendations unless asked.',
   review: 'You are a read-only analyst/reviewer delegated a task by an orchestrating Claude Code agent. Do NOT modify, create or delete any files and do not write plans for changes; answer directly. Your final message is returned verbatim to the orchestrator: lead with findings, cite file:line, keep it concise.',
 };
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'quota_exhausted']);
@@ -241,7 +243,7 @@ async function cmdRun(o, { ask = false } = {}) {
   if (ask && !sess) throw new Error('no agy session named "' + name + '"; start one with: run --name ' + name + ' --role code|review ...');
   if (o.fresh && sess) { updateSession(name, null); sess = null; }
   const role = o.role || sess?.role || 'code';
-  if (!CHAINS[role]) throw new Error('--role must be code or review (recon never goes to agy)');
+  if (!CHAINS[role]) throw new Error('--role must be code, review or recon');
   let prompt = o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
   if (!prompt.trim()) throw new Error('empty prompt');
   const cwd = path.resolve(o.cwd || sess?.cwd || process.cwd());
@@ -494,7 +496,7 @@ function cmdSessions(o) {
 }
 
 const HELP = 'agy-companion <command>\n' +
-  '  run   --role code|review [--name N] [--fresh] [--cwd DIR] [--model M] [--timeout-min 120] [--background] [--wait-sec 540] [--prompt-file F | prompt...]\n' +
+  '  run   --role code|review|recon [--name N] [--fresh] [--cwd DIR] [--model M] [--timeout-min 120] [--background] [--wait-sec 540] [--prompt-file F | prompt...]\n' +
   '  ask   <name> [--prompt-file F | prompt...]     continue a named session (same conversation)\n' +
   '  wait  <job> [--wait-sec 540]                   block until the job ends or the wait elapses\n' +
   '  status [job] [--all] [--json] | result <job> | cancel [job]\n' +

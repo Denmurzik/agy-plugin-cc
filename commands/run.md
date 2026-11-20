@@ -1,6 +1,6 @@
 ---
 description: Hand a task to Antigravity (agy) — one-shot, or as a named session you can /agy:ask later
-argument-hint: '[--role code|review] [--name <name>] [--model <id>] [--background] <task>'
+argument-hint: '[--role code|review|recon] [--name <name>] [--model <id>] [--background] <task>'
 allowed-tools: Bash(node:*), Bash(mktemp:*), Bash(cat:*), Write
 ---
 

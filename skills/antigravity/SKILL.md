@@ -1,6 +1,6 @@
 ---
 name: antigravity
-description: Delegate coding or review/analysis work to Antigravity CLI (agy, Gemini 4 Neon/Argon + Claude via Google AI Pro quota) as a peer worker — one-shot or as a named, resumable teammate — with quota-aware model fallback. Use proactively whenever a self-contained code task or review/analysis could run on agy instead of a Claude subagent and agy still has quota; also when the user mentions agy/Antigravity/Gemini as a worker or asks for a second opinion from agy. Not for recon (search, "where is X", log reading) — that stays on Claude haiku.
+description: Delegate coding, review/analysis or recon (code search, fact-finding) work to Antigravity CLI (agy, Gemini 4 Neon/Argon + Claude via Google AI Pro quota) as a peer worker — one-shot or as a named, resumable teammate — with quota-aware model fallback. Use proactively whenever a self-contained code task or review/analysis could run on agy instead of a Claude subagent and agy still has quota; also when the user mentions agy/Antigravity/Gemini as a worker or asks for a second opinion from agy. Recon goes to agy too when it is a real survey (several questions batched into one task); a single grep you can run yourself stays local.
 ---
 
 # Antigravity (agy) as a peer worker
@@ -17,9 +17,10 @@ Default chains below; the user may override them in `~/.claude/agy/config.json` 
 |---|---|---|
 | Implementation against a clear spec, bugfix, tests, mechanical multi-file change | `code` | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
 | Review, analysis, architecture/debug reasoning, explaining code (read-only) | `review` (`--mode plan`) | gemini-4-argon-medium only |
+| Recon: code search, "where is X", collecting facts, reading logs (read-only, answer as `file:line` table / ≤10 lines) | `recon` (`--mode plan`) | gemini-4-hydrogen-medium → claude-sonnet-5-5-low |
 
 Never to agy:
-- **Recon** (grep, "where is X", reading logs, collecting facts) — Claude `haiku`.
+- **One-line recon** you can answer with a single grep yourself — an agy call costs ≥12k tokens and ~10 s; batch recon questions into one `recon` task instead.
 - **Second opinion** on work already done — only when the user explicitly asks for agy's opinion.
 - Small edits (1–2 lines), work that hinges on decisions made in this conversation, final acceptance/verification — those stay with Claude.
 - Tiny tasks: every agy call costs ≥12k input tokens of its own system prompt. Batch small things into one task.
@@ -31,13 +32,13 @@ Before routing, `node "$C" pick code` / `pick review` (≈5 s, 0 tokens): prints
 ## How to call
 
 **One-shot** (you need one answer back): write the task to a temp file, then one Bash call (timeout 600000):
-`node "$C" run --role code|review --cwd "<project dir>" --prompt-file "<file>"`
+`node "$C" run --role code|review|recon --cwd "<project dir>" --prompt-file "<file>"`
 It waits up to 9 min; if it prints `still running`, call the printed `wait <job>` again. Use `--background` and later `wait` to run it beside other work.
 
 **Teammate / resumable** (you will send follow-ups): spawn the `agy:agy-proxy` agent (with a `name` inside an agent team, or as a plain subagent). Its prompt starts with the header:
 ```
 agy-name: <unique session name, e.g. agy-impl-3>
-agy-role: code | review
+agy-role: code | review | recon
 agy-cwd: <absolute dir — a worktree for code in git repos>
 ---
 <self-contained task for agy>

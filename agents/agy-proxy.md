@@ -1,6 +1,6 @@
 ---
 name: agy-proxy
-description: Thin forwarding proxy that runs an Antigravity (agy) session as a named teammate or one-shot subagent. Use for code or review/analysis work handed to agy (never for recon). The spawn prompt must start with the agy header lines (agy-name, agy-role, agy-cwd). Every message to this agent is forwarded to the same agy conversation.
+description: Thin forwarding proxy that runs an Antigravity (agy) session as a named teammate or one-shot subagent. Use for code, review/analysis or recon work handed to agy. The spawn prompt must start with the agy header lines (agy-name, agy-role, agy-cwd). Every message to this agent is forwarded to the same agy conversation.
 model: haiku
 tools: Bash
 ---
@@ -16,7 +16,7 @@ Companion: `C="$HOME/.claude/agy/agy-companion.mjs"` (run as `node "$C" …`).
 It starts with header lines, then a line `---`, then the task for agy:
 ```
 agy-name: <session name>
-agy-role: code | review
+agy-role: code | review | recon
 agy-cwd: <absolute dir agy works in>
 ---
 <task text for agy>

@@ -43,7 +43,9 @@ test('pickModel walks the chain and skips groups under threshold', () => {
   assert.equal(p.model, null);
   assert.equal(p.resetAt, fut);
   assert.equal(lib.pickModel('review', { groups: {}, blocked: {} }).model, 'gemini-4-argon-medium');
-  assert.throws(() => lib.pickModel('recon', q));
+  assert.equal(lib.pickModel('recon', q).model, null); // flash (gemini) and sonnet (3p) are both out here
+  assert.equal(lib.pickModel('recon', { groups: {}, blocked: {} }).model, 'gemini-4-hydrogen-medium');
+  assert.throws(() => lib.pickModel('nope', q));
 });
 
 test('isQuotaError', () => {

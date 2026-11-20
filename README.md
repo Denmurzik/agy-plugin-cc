@@ -3,7 +3,7 @@
 Use [Antigravity CLI](https://antigravity.google) (`agy`) from Claude Code as a **peer worker**: a one-shot subagent, or a **named teammate** you can message again — on your Google AI subscription quota instead of your Claude limits.
 
 - **Quota-aware.** Before every call it reads `agy /usage` (free, 0 tokens) and walks a model chain, skipping any model whose quota group is below 5 %. A quota error mid-session switches to the next model **in the same conversation**. When every model of a role is out, it returns `QUOTA_EXHAUSTED` with the reset time and does not call agy until then.
-- **Two roles.** `code` (writes files, commits) and `review` (read-only, `--mode plan`). Recon is intentionally not delegated.
+- **Three roles.** `code` (writes files, commits), `review` (read-only analysis, `--mode plan`) and `recon` (read-only fact-finding, answers as a `file:line` table).
 - **Resumable sessions.** `name → conversation_id` registry; follow-ups continue the same agy conversation.
 - **Background jobs** with status / wait / result / cancel; a 2-hour limit per agy turn (`--timeout-min`, `AGY_TIMEOUT_MIN`, `timeoutMin` in config.json); a turn that hits it is continued in the same conversation like a network drop.
 - **Transient-error recovery.** Network drops (`EOF`, "network issue"), malformed function calls, per-turn timeouts and stalls are retried automatically in the same conversation with a "continue where you stopped" turn. Backoff 15/30/60/120/240/300 s (`retryDelays` in config.json, `AGY_RETRY_DELAYS`); the budget counts only *consecutive failures without progress* — a turn that completed tool steps resets it, so a long job survives any number of drops as long as it keeps moving. `503 No capacity` switches to the next model of the chain in the same conversation. If the background worker itself dies (parent process tree killed, crash, sleep), the next `wait`/`status` restarts it and it continues the conversation (up to 5 times). An error after agy already gave its final `STATUS:` answer counts as done with a warning. A failed job reports the error kind, whether agy changed the workspace (new commits / dirty files) and agy's last text. agy's own log per job: `~/.claude/agy/jobs/<job>.agy.log`.
@@ -62,6 +62,7 @@ Defaults (Google AI Pro, agy 1.5.x model ids — see `agy models`):
 |---|---|
 | `code` | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
 | `review` | gemini-4-argon-medium |
+| `recon` | gemini-4-hydrogen-medium → claude-sonnet-5-5-low |
 
 Override in `~/.claude/agy/config.json`:
 ```json

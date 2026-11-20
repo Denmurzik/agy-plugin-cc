@@ -11,7 +11,8 @@
   |---|---|---|
   | `code` (запись) | обычный | gemini-4-neon-medium → claude-sonnet-5-5-medium → gemini-4-argon-medium |
   | `review` (анализ/ревью, чтение) | `--mode plan` | gemini-4-argon-medium |
-  Разведка в agy не идёт никогда (её делает Claude haiku).
+  | `recon` (разведка, чтение) | `--mode plan` | gemini-4-hydrogen-medium → claude-sonnet-5-5-low |
+  Разведка — разовые вызовы, вопросы пачкой; одиночный grep делается локально, при пустой квоте — Claude haiku.
 - Каждый вызов agy идёт с `--dangerously-skip-permissions`. Глобальные настройки agy не трогаются.
 - Квота: `agy -p /usage --output-format json` (0 токенов) перед вызовом, кэш 60 с.
   Группы: `gemini` (Neon, Flash; 5ч + неделя), `3p` (Claude, GPT-OSS; 5ч + неделя), `argon` (неделя).
