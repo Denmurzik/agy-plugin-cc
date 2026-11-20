@@ -24,7 +24,7 @@ export const CHAINS = {
   ...(CONFIG.chains || {}),
 };
 const MODES = { code: null, review: 'plan', recon: 'plan' };
-const SHELL_RULES = ' Shell rules: commands must never wait for input — always give rg/grep/find/cat an explicit path (e.g. `rg -n pattern .`), never read stdin, never start servers/watchers/pagers/interactive prompts; prefer your built-in search/read tools over shell for searching.';
+const SHELL_RULES = ' If a blocking question stops you, end your turn with a line starting "QUESTION:" — the answer arrives as your next message.' + ' Shell rules: commands must never wait for input — always give rg/grep/find/cat an explicit path (e.g. `rg -n pattern .`), never read stdin, never start servers/watchers/pagers/interactive prompts; prefer your built-in search/read tools over shell for searching.';
 const TEAM_PREAMBLE = (j) => 'You are "' + j.name + '", a member of a Claude Code agent team (team "' + j.team + '", lead "team-lead"; teammates are Claude agents and other agy agents). '
   + 'The MCP server "claude-team" gives you the team: send_message (to team-lead or a teammate by name), ask_lead (a blocking question — use it instead of guessing when a requirement is ambiguous or you are blocked), '
   + 'read_messages (new messages for you — check between major steps; the lead may redirect you), list_tasks / update_task (the shared task list). '
@@ -173,7 +173,7 @@ export function pickModel(role, q, { exclude = [], forced = null } = {}) {
 // ---------- args ----------
 function parseArgs(argv) {
   const o = { _: [] };
-  const flags = new Set(['background', 'json', 'fresh', 'refresh', 'all']);
+  const flags = new Set(['background', 'json', 'fresh', 'refresh', 'all', 'stream', 'prompt-stdin']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { o._.push(...argv.slice(i + 1)); break; }
@@ -263,6 +263,22 @@ export function startJob({ name = null, role, cwd, prompt, forcedModel = null, t
   return updateJob(id, { workerPid: w.pid });
 }
 
+// Line protocol for the mod that runs agy agents inside Claude Code:
+//   @job <id>   @progress <what agy is doing>   @done <json {status, model, header, text}>
+async function streamJob(job) {
+  out('@job ' + job.id);
+  let last = '';
+  let j = job;
+  while (!TERMINAL.has(j.status)) {
+    await sleep(1000);
+    j = refreshLiveness(loadJob(job.id)) || j;
+    const step = j.progress?.step ? String(j.progress.step).replace(/\s+/g, ' ').slice(0, 200) : '';
+    if (step && step !== last) { last = step; out('@progress ' + step); }
+  }
+  const r = render(j);
+  out('@done ' + JSON.stringify({ status: j.status, model: j.model || null, header: r.split('\n')[0], text: r.replace(/^\[agy\][^\n]*\n?/, '').trim() }));
+}
+
 async function cmdRun(o, { ask = false } = {}) {
   const name = ask ? o._.shift() : o.name;
   if (ask && !name) throw new Error('usage: ask <name> <prompt...>');
@@ -270,9 +286,10 @@ async function cmdRun(o, { ask = false } = {}) {
   if (ask && !sess) throw new Error('no agy session named "' + name + '"; start one with: run --name ' + name + ' --role code|review|recon ...');
   if (o.fresh && sess) { updateSession(name, null); sess = null; }
   const role = o.role || sess?.role || 'code';
-  const prompt = o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
+  const prompt = o['prompt-stdin'] ? fs.readFileSync(0, 'utf8') : o['prompt-file'] ? fs.readFileSync(o['prompt-file'], 'utf8') : o._.join(' ');
   const cwd = path.resolve(o.cwd || sess?.cwd || process.cwd());
   const job = startJob({ name: name || null, role, cwd, prompt, forcedModel: o.model || null, timeoutMin: o['timeout-min'], team: sess?.team || null });
+  if (o.stream) return streamJob(job);
   if (job.status === 'quota_exhausted') { out(render(job, o)); process.exitCode = 4; return; }
   if (o.background) { out('[agy] job=' + job.id + (name ? ' name=' + name : '') + ' role=' + role + ' status=QUEUED\nNext: node "' + SELF + '" wait ' + job.id); return; }
   const j = await waitJob(job.id, Number(o['wait-sec'] || 540));

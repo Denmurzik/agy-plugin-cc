@@ -35,14 +35,13 @@ Before routing, `node "$C" pick code` / `pick review` (≈5 s, 0 tokens): prints
 `node "$C" run --role code|review|recon --cwd "<project dir>" --prompt-file "<file>"`
 It waits up to 9 min; if it prints `still running`, call the printed `wait <job>` again. Use `--background` and later `wait` to run it beside other work.
 
-**Teammate** (you will send follow-ups, or it works beside other teammates): put agy on this session's agent team — one Bash call, no `Agent` spawn:
+**As an agent (preferred — it shows in the agent list like any Claude agent):** the plugin adds agent types `agy:code`, `agy:review`, `agy:recon`, whose turns agy answers instead of a Claude model:
 ```
-node "$C" team spawn --name agy-impl-3 --role code|review|recon --cwd "<abs dir — a worktree for code in git repos>" [--task <task-list id>] --prompt-file "<task file>"
+Agent({ subagent_type: "agy:code", name: "agy-impl-3", model: "haiku", description: "…", prompt: "agy-cwd: <abs dir — a worktree for code in git repos>\n<self-contained task>" })
 ```
-It is then a real member: `ListAgents` shows it, `SendMessage` to its name reaches it (same agy conversation), its report arrives by itself as a message from it. agy gets team tools (MCP server `claude-team`): it can ask you a blocking question (`QUESTION (I am blocked…` — answer with `SendMessage`), message peers, read new messages mid-turn, update its task. Stop: `SendMessage` `{type: "shutdown_request"}` or `node "$C" team stop <name>`; `node "$C" team ls` shows what each agy teammate is doing.
-The lead only polls its inbox while a Claude teammate exists — if `team spawn` warns about it, spawn `Agent({ name: "agy-hub", subagent_type: "agy:agy-hub", model: "haiku", prompt: "hold" })` once.
+With `name` it is a teammate (`SendMessage` follow-ups continue the same agy conversation; `TaskStop` stops agy too); without it, a one-shot subagent whose answer returns to you. The first line `agy-cwd: …` is optional (default: the agent's own directory). agy's live progress shows in the agent's view. When agy is blocked by a question it ends its turn with `QUESTION: …`; answer with `SendMessage`.
 
-**Resumable without a team:** `node "$C" run --name <n> …`, then `node "$C" ask <n> --prompt-file F` (or `/agy:ask`). The `agy:agy-proxy` agent is the legacy relay for setups where the native team mode is unavailable.
+**Without the agent list:** `node "$C" run --name <n> …`, then `node "$C" ask <n> --prompt-file F` (or `/agy:run`, `/agy:ask`). Legacy: `node "$C" team spawn …` (file-mailbox member, needs `agy:agy-hub`) and the `agy:agy-proxy` relay.
 
 ## Writing the task for agy
 
