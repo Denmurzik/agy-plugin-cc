@@ -245,3 +245,12 @@ test('a dead worker is restarted and continues the same conversation', () => {
   assert.ok(convOf(c.at(-1)));
   assert.match(c.at(-1).args.at(-1), /cut off/);
 });
+
+test('quota running out mid-work continues the same conversation on the next model', () => {
+  const e = env({ models: { 'gemini-4-neon-medium': 'quota-progress' } });
+  const r = run(e, 'run', '--role', 'code', 'x');
+  assert.match(r.stdout, /model=claude-sonnet-5-5-medium status=DONE/, r.stdout);
+  const c = calls(e);
+  assert.ok(convOf(c[1]), 'conversation with done work must be kept');
+  assert.match(c[1].args.at(-1), /cut off/);
+});

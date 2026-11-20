@@ -52,6 +52,11 @@ else if (beh === 'quota') {
   console.log('AGY_ERROR: {"short_error":"UNAVAILABLE (code 503): No capacity available for model ' + model + ' on the server","status":"UNAVAILABLE","error_code":503,"retryable":true}');
   console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'No capacity available for model ' + model + ' on the server' }));
   process.exit(3);
+} else if (beh === 'quota-progress') {
+  console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'write_to_file' } }));
+  console.log('AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429}');
+  console.log(JSON.stringify({ conversation_id: cid, status: 'ERROR', response: '', error: 'Individual quota reached.' }));
+  process.exit(3);
 } else if (beh === 'eof-progress') {
   console.log(JSON.stringify({ event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'tool', tool_name: 'write_to_file' } }));
   console.log('AGY_ERROR: {"short_error":"request failed: EOF","status":"UNKNOWN","retryable":true}');

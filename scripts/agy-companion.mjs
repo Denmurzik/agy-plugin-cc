@@ -410,6 +410,8 @@ async function worker(id) {
       const g = groupOfModel(model);
       const st = groupStatus(getQuota({ refresh: true }), g);
       blockGroup(g, st.until || new Date(Date.now() + 60 * 60_000).toISOString());
+      // Quota ran out in the middle of real work: keep that conversation and tell the next model to continue it.
+      if (turnSteps > 0) { saveCid(r?.conversation_id || turnCid); pendingText = CONTINUE_MSG; }
       switchModel = true;
       continue;
     }
