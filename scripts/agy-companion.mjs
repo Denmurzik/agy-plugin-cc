@@ -583,7 +583,7 @@ async function cmdTeam(o) {
     spawnBridge(teamName, name);
     const lines = [name + ' joined team ' + teamName + ' as an agy ' + role + ' teammate (model ' + p.model + ') and is working.',
       'Its report arrives as a message from ' + name + '. Follow-ups: SendMessage to "' + name + '". Stop it: SendMessage a shutdown_request, or: node "' + SELF + '" team stop ' + name + '.'];
-    if (!team.claudeTeammates(teamName).length) lines.push('WARNING: no Claude teammate is running, so the lead does not poll its inbox and agy reports would wait. Spawn the keep-alive first: Agent({ name: "agy-hub", subagent_type: "agy:agy-hub", model: "haiku", prompt: "hold" }).');
+    if (!team.claudeTeammates(teamName).length) lines.push('WARNING: no Claude teammate is running, so the lead does not poll its inbox and agy reports would wait. Prefer an agy agent type instead: Agent({ subagent_type: "agy:code" | "agy:review" | "agy:recon", name: "' + name + '", prompt }).');
     out(lines.join('\n'));
     return;
   }

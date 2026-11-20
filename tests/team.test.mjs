@@ -91,7 +91,7 @@ test('warns when no Claude teammate keeps the lead inbox poller alive; quota exh
   const e = setup({ claudeMate: false });
   const r = run(e, 'team', 'spawn', '--name', 'agy-impl-4', 'x');
   assert.match(r.stdout, /WARNING: no Claude teammate is running/);
-  assert.match(r.stdout, /agy:agy-hub/);
+  assert.match(r.stdout, /agy:code/);
   cleanup(e, 'agy-impl-4');
   const e2 = setup({ scenario: { usage: { gemini: [0.01, 1], '3p': [0.01, 1], argon: [0.0] } } });
   const r2 = run(e2, 'team', 'spawn', '--name', 'agy-impl-5', 'x');

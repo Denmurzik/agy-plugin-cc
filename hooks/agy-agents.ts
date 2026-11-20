@@ -22,16 +22,56 @@ async function agyAgent($: EngineInterface, id: string): Promise<AgyAgent | null
 }
 
 const REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
+const ENVELOPE = /<teammate-message\s+([^>]*)>\n?([\s\S]*?)\n?<\/teammate-message>/g
 
-/** What reached the agent since its last answer: the spawn prompt, or the messages that woke it. */
-export function pendingInput(messages: readonly { role: string; text: string }[]): string {
+type Msg = { role: string; text: string; toolResults?: readonly unknown[] }
+/** One message that woke the agent: plain text, or a team protocol frame (task_assignment, shutdown_request…). */
+export type Incoming = { from: string; text: string; protocol?: Record<string, unknown> }
+
+function attr(attrs: string, name: string): string | undefined {
+  return new RegExp(name + '="([^"]*)"').exec(attrs)?.[1]
+}
+
+/** The messages since the agent's last answer, unwrapped from the engine's teammate envelopes. */
+export function incoming(messages: readonly Msg[]): Incoming[] {
   let i = messages.length
   while (i > 0 && messages[i - 1]?.role === 'user') i--
-  return messages
-    .slice(i)
-    .map(m => m.text.replace(REMINDER, '').trim())
-    .filter(t => t !== '')
-    .join('\n\n---\n\n')
+  const out: Incoming[] = []
+  for (const m of messages.slice(i)) {
+    const text = m.text.replace(REMINDER, '').trim()
+    if (text === '') continue
+    let matched = false
+    for (const env of text.matchAll(ENVELOPE)) {
+      matched = true
+      const from = attr(env[1] ?? '', 'teammate_id') ?? 'team-lead'
+      const body = (env[2] ?? '').trim()
+      let protocol: Record<string, unknown> | undefined
+      try {
+        const p: unknown = JSON.parse(body)
+        if (typeof p === 'object' && p !== null && typeof (p as { type?: unknown }).type === 'string') protocol = p as Record<string, unknown>
+      } catch { /* plain text */ }
+      out.push({ from, text: body, ...(protocol === undefined ? {} : { protocol }) })
+    }
+    if (!matched) out.push({ from: 'team-lead', text })
+  }
+  return out
+}
+
+/** Whether the newest user message only carries tool results (our own SendMessage came back). */
+export function onlyToolResults(messages: readonly Msg[]): boolean {
+  const last = messages[messages.length - 1]
+  return last?.role === 'user' && (last.toolResults?.length ?? 0) > 0 && last.text.replace(REMINDER, '').trim() === ''
+}
+
+/** The prompt for agy: plain messages as they are, a first task assignment as a task, other frames dropped. */
+export function promptFrom(items: readonly Incoming[], hasAnswered: boolean): string {
+  const parts: string[] = []
+  for (const it of items) {
+    const p = it.protocol
+    if (p === undefined) parts.push(it.from === 'team-lead' ? it.text : 'Message from teammate ' + it.from + ':\n' + it.text)
+    else if (p.type === 'task_assignment' && !hasAnswered) parts.push('Your task #' + String(p.taskId) + ': ' + String(p.subject ?? '') + '\n' + String(p.description ?? ''))
+  }
+  return parts.join('\n\n---\n\n').trim()
 }
 
 /** Optional header lines on top of a prompt: "agy-cwd: <dir>" (and the legacy proxy header). */
@@ -51,6 +91,8 @@ export function splitHeader(text: string): { cwd?: string; body: string } {
 
 type Done = { status: string; model: string | null; header: string; text: string }
 
+let seq = 0
+
 export const register: Register = on => {
   on('turn.step', async function* ($, e, next) {
     const id = e.agentId
@@ -58,10 +100,39 @@ export const register: Register = on => {
     const agent = await agyAgent($, id)
     if (agent === null) return yield* next(e)
 
+    const read = await $.session.messages({ agentId: id })
+    const messages = Array.isArray(read) ? read : []
+    const quiet = (text: string) => ({ turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn' as const, usage: null })
+
+    // Our own SendMessage (a shutdown approval) came back: the turn is over, agy is not asked.
+    if (onlyToolResults(messages)) {
+      yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+      return quiet('')
+    }
+    const items = incoming(messages)
+    // A shutdown request is approved natively, as the teammate's own SendMessage.
+    const shutdown = items.find(it => it.protocol?.type === 'shutdown_request')
+    if (shutdown !== undefined) {
+      const input = { to: shutdown.from, message: { type: 'shutdown_response', request_id: String(shutdown.protocol?.requestId ?? shutdown.protocol?.request_id ?? ''), approve: true } }
+      const callId = 'toolu_agy_' + Date.now().toString(36) + (seq++).toString(36)
+      yield { kind: 'tool', index: 0, id: callId, name: 'SendMessage' }
+      yield { kind: 'input', index: 0, json: JSON.stringify(input) }
+      yield { kind: 'stop', stopReason: 'tool_use', usage: null }
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [{ name: 'SendMessage', input }], stopReason: 'tool_use', usage: null }
+    }
+    const hasAnswered = messages.some(m => m.role === 'assistant')
+    const prompt = promptFrom(items, hasAnswered)
+    // Only harness notifications woke it (a task assignment of work it already did, an idle ping): no agy run.
+    if (prompt === '') {
+      const text = hasAnswered ? 'ok' : 'No task received yet.'
+      yield { kind: 'text', index: 0, text }
+      yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+      return quiet(text)
+    }
+
     const env = await $.process.hookEnv()
     const companion = (env.CLAUDE_PLUGIN_ROOT ?? '') + '/scripts/agy-companion.mjs'
-    const read = await $.session.messages({ agentId: id })
-    const { cwd, body } = splitHeader(pendingInput(Array.isArray(read) ? read : []))
+    const { cwd, body } = splitHeader(prompt)
     const input = body === '' ? 'Continue.' : body
     const argv = ['node', companion, 'run', '--name', 'cc-' + id, '--role', agent.role, '--cwd', cwd ?? agent.cwd, '--stream', '--prompt-stdin']
 

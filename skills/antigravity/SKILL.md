@@ -41,7 +41,7 @@ Agent({ subagent_type: "agy:code", name: "agy-impl-3", model: "haiku", descripti
 ```
 With `name` it is a teammate (`SendMessage` follow-ups continue the same agy conversation; `TaskStop` stops agy too); without it, a one-shot subagent whose answer returns to you. The first line `agy-cwd: …` is optional (default: the agent's own directory). agy's live progress shows in the agent's view. When agy is blocked by a question it ends its turn with `QUESTION: …`; answer with `SendMessage`.
 
-**Without the agent list:** `node "$C" run --name <n> …`, then `node "$C" ask <n> --prompt-file F` (or `/agy:run`, `/agy:ask`). Legacy: `node "$C" team spawn …` (file-mailbox member, needs `agy:agy-hub`) and the `agy:agy-proxy` relay.
+**Without the agent list:** `node "$C" run --name <n> …`, then `node "$C" ask <n> --prompt-file F` (or `/agy:run`, `/agy:ask`).
 
 ## Writing the task for agy
 
